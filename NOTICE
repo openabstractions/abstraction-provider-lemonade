@@ -1,0 +1,13 @@
+abstraction-provider-lemonade
+Copyright 2026 the openabstractions contributors
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Lemonade, its engine binaries and model weights are separate third-party
+components. This source repository does not include them. Their exact
+package and model records, licenses and consent live in the installer and
+Setup inputs.
+
+Third-party components compiled into this software are recorded in
+THIRD_PARTY_NOTICES.md in the abstractions repository:
+https://github.com/openabstractions/abstractions/blob/main/THIRD_PARTY_NOTICES.md
