@@ -7,10 +7,75 @@ import (
 	"io/fs"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/sdcpp"
+	registration "github.com/openabstractions/abstraction-facade/go/abstraction/facade/registration"
+	"github.com/openabstractions/abstraction-provider-kit/go/sdcpp"
 )
+
+// DeclareEngineFacts selects exact entries from the reviewed recipe table.
+// Unknown models retain unknown engine/object associations.
+func DeclareEngineFacts(facet *registration.ProviderFacet) {
+	declareImageFacts(facet)
+	// The reviewed speech models are installed by hash too: each file of the
+	// pinned revision is one recipe object, named by its file stem.
+	for _, speech := range []struct {
+		modality string
+		model    SpeechModel
+		engine   registration.EngineFact
+	}{
+		{"transcription", WhisperLargeV3TurboModel, registration.EngineFact{ID: "whispercpp", Name: "whisper.cpp"}},
+		{"speech", KokoroV1Model, registration.EngineFact{ID: "kokoros", Name: "Kokoros"}},
+	} {
+		if !slices.Contains(facet.Models, registration.ScopedModel{Modality: speech.modality, Model: speech.model.Name}) {
+			continue
+		}
+		recipe := registration.ModelRecipe{Model: speech.model.Name, Engine: speech.engine.ID, Modalities: []string{speech.modality}}
+		for _, file := range speech.model.Files {
+			recipe.Objects = append(recipe.Objects, registration.RecipeObject{Role: speechRole(file.Name), Digest: "sha256:" + file.SHA256})
+		}
+		facet.Engines = append(facet.Engines, speech.engine)
+		facet.Recipes = append(facet.Recipes, recipe)
+	}
+}
+
+// speechRole names a speech file's recipe role: the model's weights are
+// main, every other file its stem (index, voices).
+func speechRole(name string) string {
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	switch {
+	case strings.HasPrefix(stem, "ggml-") || strings.HasPrefix(stem, "kokoro-"):
+		return "main"
+	case strings.HasPrefix(stem, "voices"):
+		return "voices"
+	}
+	return stem
+}
+
+func declareImageFacts(facet *registration.ProviderFacet) {
+	for _, scoped := range facet.Models {
+		if scoped.Modality != "image" {
+			continue
+		}
+		for _, model := range ImageModels {
+			if model.ID != scoped.Model {
+				continue
+			}
+			recipe := registration.ModelRecipe{Model: model.ID, Engine: "sdcpp", Modalities: []string{"image"}}
+			for _, file := range model.Files {
+				recipe.Objects = append(recipe.Objects, registration.RecipeObject{Role: file.Role, Digest: "sha256:" + file.SHA256})
+			}
+			if len(recipe.Objects) == 0 {
+				continue
+			}
+			if len(facet.Recipes) == 0 {
+				facet.Engines = append(facet.Engines, registration.EngineFact{ID: "sdcpp", Name: "Lemonade sd.cpp"})
+			}
+			facet.Recipes = append(facet.Recipes, recipe)
+		}
+	}
+}
 
 // ErrImageModel reports a picture model declaration that is incomplete or
 // outside the reviewed bounds. A weight file that is no safetensors or GGUF

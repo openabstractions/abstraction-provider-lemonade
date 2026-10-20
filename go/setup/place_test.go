@@ -61,7 +61,7 @@ func identities(t *testing.T, paths ...string) []os.FileInfo {
 // disk holds one file per download, and the download is gone afterwards.
 func TestStageBF16PublishesEachDownloadByRename(t *testing.T) {
 	// A short root keeps the model path within Lemonade's Windows limit.
-	root, err := os.MkdirTemp("", "oa-klein-")
+	root, err := modelFixtureRoot(t, "oa-klein-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,8 +12,8 @@ import (
 
 	inference "github.com/openabstractions/abstraction-inference/go"
 	wire "github.com/openabstractions/abstraction-inference/go/abstraction/inference/api"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/whispercpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/whispercpp"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 

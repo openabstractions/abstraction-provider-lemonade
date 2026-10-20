@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"golang.org/x/sys/windows"
 )
 
@@ -45,7 +45,7 @@ func TestPackageCheckOfAnUnreadableFileIsNoRefusal(t *testing.T) {
 		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
 			t.Fatalf("the locked %s's error lost its cause: %v", name, err)
 		}
-		if name != "lemond.exe" && !errors.Is(err, enginefiles.ErrUnreadable) {
+		if name != "lemond.exe" && !errors.Is(err, programfiles.ErrUnreadable) {
 			t.Fatalf("the locked %s is not unreadable: %v", name, err)
 		}
 	}

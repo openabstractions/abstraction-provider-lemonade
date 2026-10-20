@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -263,7 +263,7 @@ func RetirePackage(ctx context.Context, root, version string) error {
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		if err := enginefiles.UnlockWithin(aside); err != nil {
+		if err := programfiles.UnlockWithin(aside); err != nil {
 			return err
 		}
 		for _, folder := range []string{aside, ConfigDirFor(root, p.Version), StateDirFor(root, p.Version)} {

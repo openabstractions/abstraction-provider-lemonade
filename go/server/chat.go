@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/llamacpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/llamacpp"
 )
 
 // chatRoute is the OpenAI-compatible chat call Lemonade 2026.39.1 serves
@@ -64,7 +64,7 @@ func (s *Server) chatReadyLocked() error {
 		}
 		return chatRefusal("load-options", "%v", err)
 	}
-	if err := validateEnvironment(s.launchEnv); err != nil {
+	if err := validateEnvironment(s.launchEnv, s.launched.RuntimeEndpoint); err != nil {
 		return chatRefusal("environment", "%v", err)
 	}
 	return nil

@@ -10,15 +10,24 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 )
+
+func TestBareContentDigestGrammar(t *testing.T) {
+	good := strings.Repeat("a", 64)
+	for _, value := range []string{good, "", good[:63], good + "a", strings.ToUpper(good), strings.Repeat("g", 64), "sha256:" + good, " " + good} {
+		if hex64(value) != (value == good) {
+			t.Fatalf("bare content digest %q", value)
+		}
+	}
+}
 
 // openACL stands for the shared kit's read-only folder ACL, whose own tests
 // set and check the real one.
 type openACL struct{}
 
-func (openACL) Restrict([]string) error                 { return nil }
-func (openACL) Check(string, *enginefiles.Handle) error { return nil }
+func (openACL) Restrict([]string) error                  { return nil }
+func (openACL) Check(string, *programfiles.Handle) error { return nil }
 
 // writeBackendFixture writes a backend folder and returns the manifest that
 // pins it. excluded names are added to the manifest but not written.
@@ -166,8 +175,8 @@ func TestReviewedManifestsMatchReviews(t *testing.T) {
 	if len(SDCppVulkan.Files) != 21 || len(SDCppVulkan.Excluded) != 0 {
 		t.Fatalf("sd.cpp manifest has %d files, review records 21", len(SDCppVulkan.Files))
 	}
-	if len(LlamaCppVulkanB10825.Files) != 52 {
-		t.Fatalf("llama.cpp manifest has %d files, review records 52", len(LlamaCppVulkanB10825.Files))
+	if len(LlamaCppVulkanB10825.Files) != 52+len(llamaRuntimeFiles()) {
+		t.Fatalf("llama.cpp manifest has %d files, want publisher52 plus pinned runtime", len(LlamaCppVulkanB10825.Files))
 	}
 	digest := func(m BackendManifest, name string) string {
 		for _, f := range m.Files {
@@ -223,6 +232,47 @@ func TestOtherLlamaBuildRefusalNamesTheFix(t *testing.T) {
 	}
 }
 
+func TestPublisherOnlyB10825TreeRefusesChatAndImageWithBothInputs(t *testing.T) {
+	cache := t.TempDir()
+	files := map[string]string{}
+	runtime := map[string]bool{}
+	for _, file := range llamaRuntimeFiles() {
+		runtime[file.Name] = true
+	}
+	for _, file := range LlamaCppVulkanB10825.Required() {
+		if !runtime[file.Name] {
+			files[file.Name] = "inert publisher " + file.Name
+		}
+	}
+	if len(files) != 24 {
+		t.Fatalf("publisher-only fixture has %d files", len(files))
+	}
+	llama, dir := writeBackendFixture(t, cache, "llamacpp", "vulkan", files, nil)
+	llama.Version = "b10825"
+	llama.Files = append(llama.Files, llamaRuntimeFiles()...)
+	sort.Slice(llama.Files, func(i, j int) bool { return llama.Files[i].Name < llama.Files[j].Name })
+	if err := os.WriteFile(filepath.Join(dir, "version.txt"), llama.VersionFile(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sd, _ := writeBackendFixture(t, cache, "sd-cpp", "vulkan", map[string]string{"sd-server.exe": "inert sd"}, nil)
+	for _, route := range []struct {
+		name  string
+		image bool
+	}{{"chat", false}, {"image", true}} {
+		t.Run(route.name, func(t *testing.T) {
+			s := &Server{files: programfiles.NewVerifier(programfiles.Options{ACL: openACL{}})}
+			cfg := Config{CacheDir: cache, StateDir: t.TempDir(), SDBackend: sd, LlamaBackend: llama, RequireVulkanBackend: route.image,
+				WhisperBackend: WhisperCppVulkan, KokoroBackend: KokorosB17}
+			for _, err := range []error{CheckBackendTree(cache, sd, llama, route.image), s.checkBackend(cfg)} {
+				if !errors.Is(err, ErrBackendManifest) || !strings.Contains(err.Error(), "llama-b10825-bin-win-vulkan-x64.zip") ||
+					!strings.Contains(err.Error(), llamaRuntimeArchive) || !strings.Contains(err.Error(), "--replace-backend") {
+					t.Fatalf("publisher-only refusal: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // Lemonade 2026.39.1 pins llama.cpp b10825 (its resources/backend_versions.json);
 // the provider admits only that build's reviewed folder by default.
 func TestNewSelectsTheReviewedB10825Backend(t *testing.T) {
@@ -240,12 +290,18 @@ func TestNewSelectsTheReviewedB10825Backend(t *testing.T) {
 // review's file table records it, and review condition 5's reduced set.
 func TestB10825ManifestMatchesTheReview(t *testing.T) {
 	m := LlamaCppVulkanB10825
-	if !m.valid() || m.Family != "llamacpp" || m.Variant != "vulkan" || m.Version != "b10825" || len(m.Files) != 52 {
+	runtime := map[string]string{}
+	for _, file := range llamaRuntimeFiles() {
+		runtime[file.Name] = file.SHA256
+	}
+	if !m.valid() || m.Family != "llamacpp" || m.Variant != "vulkan" || m.Version != "b10825" || len(m.Files) != 52+len(runtime) {
 		t.Fatalf("b10825 manifest: valid %v, %d files", m.valid(), len(m.Files))
 	}
 	kept := map[string]bool{}
 	for _, f := range m.Required() {
-		kept[f.Name] = true
+		if runtime[f.Name] == "" {
+			kept[f.Name] = true
+		}
 	}
 	want := []string{"LICENSE-LLVM-OpenMP", "ggml-base.dll", "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll", "ggml-cpu-cascadelake.dll",
 		"ggml-cpu-cooperlake.dll", "ggml-cpu-haswell.dll", "ggml-cpu-icelake.dll", "ggml-cpu-ivybridge.dll", "ggml-cpu-piledriver.dll",
@@ -260,10 +316,7 @@ func TestB10825ManifestMatchesTheReview(t *testing.T) {
 			t.Fatalf("b10825 does not keep %s", name)
 		}
 	}
-	review, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "research", "security-reviews", "llama.cpp-b10825-win-vulkan-x64.md"))
-	if os.IsNotExist(err) {
-		t.Skip("the review is not in this tree")
-	}
+	review, err := os.ReadFile(privateInput(t, "..", "..", "..", "..", "research", "security-reviews", "llama.cpp-b10825-win-vulkan-x64.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +344,9 @@ func TestB10825ManifestMatchesTheReview(t *testing.T) {
 		t.Fatalf("read %d digests from the review", len(digests))
 	}
 	for _, f := range m.Files {
+		if runtime[f.Name] == f.SHA256 {
+			continue
+		}
 		if digests[f.Name] != f.SHA256 {
 			t.Fatalf("%s: manifest %s, review %s", f.Name, f.SHA256, digests[f.Name])
 		}

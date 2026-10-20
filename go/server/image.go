@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	media "github.com/openabstractions/abstraction-inference/go/mediationcontent"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -13,19 +14,19 @@ import (
 	"unicode/utf8"
 
 	inference "github.com/openabstractions/abstraction-inference/go"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/sdcpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/sdcpp"
 	router "github.com/openabstractions/abstraction-router/go"
 )
 
 // ErrImageRoute reports an image request the provider refuses before Lemonade
-// sees it. Each refusal also wraps sdcpp.ErrEngineDirective,
-// sdcpp.ErrImageSize or sdcpp.ErrRequestForm, which inference turns into the
+// sees it. Each refusal also wraps media.ErrEngineDirective,
+// media.ErrImageSize or media.ErrRequestForm, which inference turns into the
 // reasons prompt:engine-directive, size:engine-bound and request:engine-form.
 var ErrImageRoute = errors.New("lemonade: image route refused")
 
-// formRefusal is a refusal for the request's form (sdcpp.ErrRequestForm).
+// formRefusal is a refusal for the request's form (media.ErrRequestForm).
 func formRefusal(format string, args ...any) error {
-	return fmt.Errorf("%w: %w: %s", ErrImageRoute, sdcpp.ErrRequestForm, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: %w: %s", ErrImageRoute, media.ErrRequestForm, fmt.Sprintf(format, args...))
 }
 
 // policyRefusal wraps a refusal of the sdcpp package.

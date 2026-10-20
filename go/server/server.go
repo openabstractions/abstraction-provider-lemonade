@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,11 +23,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	supervision "github.com/openabstractions/abstraction-facade/go/supervision"
 	identity "github.com/openabstractions/abstraction-identity"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginehttp"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginelaunch"
+	"github.com/openabstractions/abstraction-provider-kit/go/enginehttp"
+	"github.com/openabstractions/abstraction-provider-kit/go/enginelaunch"
 )
 
 const pollInterval = 100 * time.Millisecond
@@ -38,8 +40,10 @@ var (
 // Config names an approved executable, private state, and an isolated loopback
 // port. The caller supplies the exact model ids advertised by this provider.
 type Config struct {
-	Program       string
-	ProgramSHA256 string // Set by catalog-qualified setup; custom advanced mode is unqualified.
+	// RuntimeEndpoint is the exact optional OA resolver selected by trusted bootstrap.
+	RuntimeEndpoint string
+	Program         string
+	ProgramSHA256   string // Set by catalog-qualified setup; custom advanced mode is unqualified.
 	// Package, when named, pins every file of the folder holding Program;
 	// it is checked immediately before each launch.
 	Package              PackageManifest
@@ -92,11 +96,12 @@ type Config struct {
 	// after an audio request; zero selects DefaultIdleStop.
 	IdleStop time.Duration
 
-	// helperArgs lets this package's tests run the test binary as a stand-in
-	// engine, and folderACL stands for the read-only folder ACL in them.
-	// Nothing outside the package can set either.
-	helperArgs []string
-	folderACL  enginefiles.ACL
+	// helperArgs lets tests run the test binary as a stand-in engine,
+	// shutdownGrace gives that instance its finite stop grace, and folderACL
+	// stands for the read-only folder ACL. These fields are package-private.
+	helperArgs    []string
+	shutdownGrace time.Duration
+	folderACL     programfiles.ACL
 	// chatBackend is the llama.cpp manifest the chat route requires; zero
 	// selects the reviewed LlamaCppVulkanB10825. Tests set a fixture.
 	chatBackend BackendManifest
@@ -122,7 +127,7 @@ type Server struct {
 	sockets     func() ([]identity.Socket, error)
 	// files proves and holds the package and backend folders for this
 	// provider process (INF-F1..INF-F4).
-	files *enginefiles.Verifier
+	files *programfiles.Verifier
 	// llamaHeld records that this launch proved and holds the llama.cpp
 	// folder; launchEnv is the environment it gave Lemonade, which
 	// llama-server inherits. The chat route checks both.
@@ -231,6 +236,10 @@ func (s *Server) launchConfig(ctx context.Context) (Config, error) {
 
 // RefusalReason names a typed launch refusal for the admission answer.
 func RefusalReason(err error) string {
+	var image *imageStagingRefusal
+	if errors.As(err, &image) {
+		return "engine:image:model-files"
+	}
 	var chat *ChatRefusal
 	if errors.As(err, &chat) {
 		return "engine:chat-route:" + chat.Condition
@@ -275,6 +284,9 @@ func (s *Server) verifyLoopback(proc *supervision.Process) error {
 }
 
 func New(cfg Config) (*Server, error) {
+	if cfg.shutdownGrace <= 0 {
+		cfg.shutdownGrace = defaultShutdownGrace
+	}
 	// A speech-only install declares no image model; AllowsModel then
 	// answers false for every name.
 	if cfg.Port < 1 || cfg.Port > 65535 || len(cfg.Models) == 0 && !cfg.Transcription && !cfg.Speech {
@@ -353,7 +365,7 @@ func New(cfg Config) (*Server, error) {
 	cfg.Models = append([]string(nil), cfg.Models...)
 	cfg.helperArgs = append([]string(nil), cfg.helperArgs...)
 	return &Server{cfg: cfg, base: "http://127.0.0.1:" + strconv.Itoa(cfg.Port), requests: make(chan struct{}, 1), systemDir: systemWindowsDir, sockets: identity.Sockets,
-		files: enginefiles.NewVerifier(enginefiles.Options{ACL: cfg.folderACL})}, nil
+		files: programfiles.NewVerifier(programfiles.Options{ACL: cfg.folderACL})}, nil
 }
 
 func (s *Server) Base() string { return s.base }
@@ -636,7 +648,7 @@ func (s *Server) checkBackend(cfg Config) error {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	for _, b := range trees {
-		if err := s.files.Check(context.Background(), b.tree); err != nil {
+		if _, err := s.files.CheckRepairing(context.Background(), b.tree, log.Writer()); err != nil {
 			return fmt.Errorf("%w: %w", ErrUnavailable, b.m.refusal(remedy(err)))
 		}
 	}
@@ -762,6 +774,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("%w: contained start: %w", ErrUnavailable, err)
 	}
 	s.proc, s.keys = proc, keys
+	logTransport(cfg)
 	s.llamaHeld, s.launchEnv, s.launched = held.llama, plan.Env, cfg
 	s.packageHeld, s.speechHeld = held.pkg, held.speech
 	s.exited = make(chan struct{})
@@ -920,7 +933,7 @@ func (s *Server) stopLocked() error {
 				}
 				s.clearLocked()
 				return nil
-			case <-time.After(shutdownGrace):
+			case <-time.After(s.cfg.shutdownGrace):
 				shutdownErr = errShutdownGrace
 			}
 		}
@@ -935,7 +948,7 @@ func (s *Server) stopLocked() error {
 			// Lemonade accepted the shutdown but its tree outlived the
 			// grace, which a loaded machine can cause; the forced stop
 			// confirmed the whole tree exited, so the stop succeeded.
-			s.logf("lemonade: the tree did not exit within %v of its accepted shutdown; the forced stop confirmed its exit", shutdownGrace)
+			s.logf("lemonade: the tree did not exit within %v of its accepted shutdown; the forced stop confirmed its exit", s.cfg.shutdownGrace)
 			return nil
 		}
 		return errors.Join(shutdownErr, forceErr, s.waitErr)
@@ -944,12 +957,45 @@ func (s *Server) stopLocked() error {
 	}
 }
 
-// shutdownGrace is how long an accepted shutdown waits for the tree to exit
+// defaultShutdownGrace is how long an accepted shutdown waits for the tree to exit
 // before the forced stop.
-var shutdownGrace = 3 * time.Second
+const defaultShutdownGrace = 3 * time.Second
 
 // errShutdownGrace is an accepted shutdown whose tree outlived the grace.
 var errShutdownGrace = fmt.Errorf("%w: shutdown did not exit within grace", ErrUnavailable)
+
+// logTransport distinguishes the running front-end from its backend plan;
+// Lemonade starts those backends on demand, so their presence is not claimed.
+func logTransport(cfg Config) {
+	backendPin := func(m BackendManifest, program string) string {
+		for _, f := range m.Files {
+			if filepath.Base(f.Name) == program {
+				return m.Family + "/" + m.Variant + "@" + m.Version + ":" + f.SHA256
+			}
+		}
+		return "unqualified"
+	}
+	report := func(engine, pin, scope string) {
+		const reason = "IPC not implemented in this adopter"
+		slog.Info("engine transport", "engine", engine, "pin", pin, "transport", "tcp-loopback", "reason", reason, "scope", scope)
+		if cfg.Output != nil {
+			//unchecked: informational diagnostics do not alter the admitted launch
+			fmt.Fprintf(cfg.Output, "INFO engine=%q pin=%q transport=tcp-loopback reason=%q scope=%s\n", engine, pin, reason, scope)
+		}
+	}
+	pin := cfg.ProgramSHA256
+	if pin == "" {
+		pin = "unqualified"
+	}
+	report("lemond", pin, "launched")
+	report("sd-server", backendPin(cfg.SDBackend, "sd-server.exe"), "adopter-plan")
+	if cfg.Transcription {
+		report("whisper-server", backendPin(cfg.WhisperBackend, "whisper-server.exe"), "adopter-plan")
+	}
+	if cfg.Speech {
+		report("Kokoros", backendPin(cfg.KokoroBackend, "koko.exe"), "adopter-plan")
+	}
+}
 
 // logf writes one provider line to the tree's output, where Lemonade's own
 // log goes; nothing when the configuration names none.

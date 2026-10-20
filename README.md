@@ -83,7 +83,7 @@ began as a picture provider; renaming it is TODO D7.
 ## Resources
 
 The installed declaration names `card:0`. Before starting Lemonade, the
-provider proves the backend and takes a card lease through the resource kit's
+provider proves the backend and takes a card [lease](https://openabstractions.github.io/reference.html#concept-resource.lease) through the resource kit's
 `holder`, using the declared models' pinned admission estimate. The lease is
 bound to the engine process, renewed every eight seconds and released when
 the tree stops. The `gpufault` Guard handles driver resets and quarantine.
@@ -143,5 +143,6 @@ Apache-2.0, as the rest of this repository. Lemonade and the picture models
 carry their own licences, listed in
 [packaging/windows-amd64.json](packaging/windows-amd64.json) and
 `go/server/models.go`. `koko.exe` and `espeak-ng-data` are
-GPL-3.0-or-later; OA never ships them, and Setup downloads them from their
-publisher with consent text naming that licence.
+GPL-3.0-or-later; OA never ships them. They are fetched from their publisher,
+pinned in `installer/third-party.tsv`; no Setup step downloads them or shows
+consent text for them yet.

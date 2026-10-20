@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	identity "github.com/openabstractions/abstraction-identity"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
 	"golang.org/x/sys/windows"
 )
 
@@ -87,10 +87,11 @@ func TestPackageFilesAreHeldWhileTheEngineRuns(t *testing.T) {
 	}
 }
 
-// INF-F3: with the real folder ACL, a package folder that setup never
-// installed refuses the launch; InstallFiles gives it the read-only ACL and
-// the launch proceeds.
-func TestLaunchRefusesAPackageWithoutTheReadOnlyACL(t *testing.T) {
+// INF-F3: with the real folder ACL, a package folder whose read-only ACL is
+// gone (setup never set it, or a removal unlocked it) launches when every
+// file proves against the package manifest: the launch sets the ACL again.
+// A changed file still refuses with the remedy.
+func TestLaunchRepairsAPackageWithoutTheReadOnlyACL(t *testing.T) {
 	cfg := fakeConfig(t, "helper-ready")
 	cfg.folderACL = nil
 	program, err := os.ReadFile(cfg.Program)
@@ -98,35 +99,38 @@ func TestLaunchRefusesAPackageWithoutTheReadOnlyACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root, m := writePackageFixture(t, map[string][]byte{"lemond.exe": program, "resources/defaults.json": []byte(`{}`)})
-	t.Cleanup(func() { enginefiles.Unlock(root) })
+	t.Cleanup(func() { programfiles.Unlock(root) })
 	cfg.Program, cfg.Package = filepath.Join(root, "lemond.exe"), m
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Start(context.Background())
-	if !errors.Is(err, ErrPackageManifest) || !errors.Is(err, enginefiles.ErrFolderACL) || s.proc != nil || !strings.Contains(err.Error(), "lemonaded configure") ||
-		!strings.Contains(err.Error(), "--engine-files-only") {
-		t.Fatalf("a package without the read-only ACL launched, or the refusal names no remedy: %v", err)
-	}
-	if RefusalReason(err) != "engine:package-unavailable" {
-		t.Fatalf("reason %q", RefusalReason(err))
-	}
-	binding := Binding{Program: cfg.Program, Package: m, SDBackend: SDCppVulkan, LlamaBackend: LlamaCppVulkanB10825, CacheDir: cfg.CacheDir, StateDir: s.cfg.StateDir}
-	if ok, err := FilesInstalled(binding); err != nil || ok {
-		t.Fatalf("a package never installed counts as installed: %v %v", ok, err)
-	}
-	if err := InstallFiles(context.Background(), binding); err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := FilesInstalled(binding); err != nil || !ok {
-		t.Fatalf("the installed package does not count as installed: %v %v", ok, err)
-	}
 	if err := s.Start(context.Background()); err != nil {
-		t.Fatalf("the installed package was refused: %v", err)
+		t.Fatalf("a package whose files all prove was refused for its folder ACL: %v", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if locked, err := programfiles.Installed(root); err != nil || !locked {
+		t.Fatalf("the launch did not set the read-only ACL again: %v %v", locked, err)
+	}
+
+	if err := programfiles.Unlock(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "resources", "defaults.json"), []byte(`{"x":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.Start(context.Background())
+	if !errors.Is(err, ErrPackageManifest) || !errors.Is(err, programfiles.ErrMismatch) || s.proc != nil {
+		t.Fatalf("a changed package file launched: %v", err)
+	}
+	if locked, err := programfiles.Installed(root); err != nil || locked {
+		t.Fatalf("a refused package was locked: %v %v", locked, err)
 	}
 }
 
@@ -769,10 +773,8 @@ func TestFailedGracefulShutdownReportsUnverifiedCleanup(t *testing.T) {
 // with one line in the tree's output saying so. A refused shutdown still
 // reports unverified cleanup (TestFailedGracefulShutdownReportsUnverifiedCleanup).
 func TestAForcedStopThatConfirmsTheExitSucceeds(t *testing.T) {
-	grace := shutdownGrace
-	shutdownGrace = 200 * time.Millisecond
-	defer func() { shutdownGrace = grace }()
 	cfg := fakeConfig(t, "helper-slow-shutdown")
+	cfg.shutdownGrace = 200 * time.Millisecond
 	output, err := os.Create(filepath.Join(t.TempDir(), "lemonade.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -795,6 +797,27 @@ func TestAForcedStopThatConfirmsTheExitSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(string(log), "the forced stop confirmed its exit") {
 		t.Fatalf("no line for the forced stop in the output:\n%s", log)
+	}
+	if !strings.Contains(string(log), "within 200ms of its accepted shutdown") {
+		t.Fatalf("the instance's grace was not used: %s", log)
+	}
+}
+
+func TestEngineLife1676ShutdownGraceIsInstanceLocal(t *testing.T) {
+	first := fakeConfig(t, "helper-ready")
+	first.shutdownGrace = 200 * time.Millisecond
+	a, err := New(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := fakeConfig(t, "helper-ready")
+	b, err := New(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.shutdownGrace = time.Millisecond
+	if a.cfg.shutdownGrace != 200*time.Millisecond || b.cfg.shutdownGrace != defaultShutdownGrace {
+		t.Fatalf("configuration crossed instances: %v %v", a.cfg.shutdownGrace, b.cfg.shutdownGrace)
 	}
 }
 

@@ -3,13 +3,12 @@ package server
 import (
 	"bytes"
 	"errors"
+	media "github.com/openabstractions/abstraction-inference/go/mediationcontent"
 	"io"
 	"mime"
 	"mime/multipart"
 	"strings"
 	"testing"
-
-	"github.com/openabstractions/abstraction-inference/go/providerhost/sdcpp"
 )
 
 // anyModel admits every model; these tests check fields other than model.
@@ -45,20 +44,20 @@ func TestSeedExtensionBecomesTheEngineSeed(t *testing.T) {
 func TestImageRouteRefusesASeedOutsideTheBound(t *testing.T) {
 	for _, seed := range []string{`"7"`, `-1`, `2147483648`, `7.0`, `1e3`, `07`, `null`, `[7]`, `{"seed":7}`, `true`} {
 		_, err := checkImageJSON([]byte(`{"model":"user.Z-Image-Turbo","prompt":"a lighthouse","n":1,"size":"512x512","seed":`+seed+`}`), anyModel)
-		if !errors.Is(err, ErrImageRoute) || !errors.Is(err, sdcpp.ErrRequestForm) {
+		if !errors.Is(err, ErrImageRoute) || !errors.Is(err, media.ErrRequestForm) {
 			t.Fatalf("generation seed %s: %v", seed, err)
 		}
 	}
 	for _, seed := range []string{"", "seven", "-1", "+7", "07", "2147483648", "7 ", "1e3"} {
 		contentType, body := editForm(t, "snow", "1024x1024", formPart{name: "seed", data: []byte(seed)})
 		_, params, _ := mime.ParseMediaType(contentType)
-		if _, _, err := checkImageForm(body, params["boundary"], anyModel); !errors.Is(err, sdcpp.ErrRequestForm) {
+		if _, _, err := checkImageForm(body, params["boundary"], anyModel); !errors.Is(err, media.ErrRequestForm) {
 			t.Fatalf("edit seed %q: %v", seed, err)
 		}
 	}
 	contentType, body := editForm(t, "snow", "1024x1024", formPart{name: "seed", file: "seed.png", media: "image/png", data: pngInput})
 	_, params, _ := mime.ParseMediaType(contentType)
-	if _, _, err := checkImageForm(body, params["boundary"], anyModel); !errors.Is(err, sdcpp.ErrRequestForm) {
+	if _, _, err := checkImageForm(body, params["boundary"], anyModel); !errors.Is(err, media.ErrRequestForm) {
 		t.Fatalf("a seed file part was accepted: %v", err)
 	}
 }

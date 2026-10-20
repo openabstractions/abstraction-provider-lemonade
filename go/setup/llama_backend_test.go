@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -161,10 +162,7 @@ func TestConfigureStagingReplacesAnotherLlamaBuild(t *testing.T) {
 // file by server/manifest.go, excluded exactly when the manifest excludes it.
 // No other llama.cpp row of the lemonade build remains.
 func TestPinRecordsMatchTheLlamaManifest(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "installer", "third-party.tsv"))
-	if os.IsNotExist(err) {
-		t.Skip("the pin records are not in this tree")
-	}
+	data, err := os.ReadFile(privateInput(t, "..", "..", "..", "..", "installer", "third-party.tsv"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +198,17 @@ func TestPinRecordsMatchTheLlamaManifest(t *testing.T) {
 	}
 	for _, f := range m.Files {
 		row := files[f.Name]
+		isRuntime := false
+		for _, runtime := range llamaRuntimeInput.Files {
+			isRuntime = isRuntime || f.Name == runtime.Name
+		}
+		if isRuntime {
+			if row == nil || row[2] != "runtime" || row[3] != llamaRuntimeVersion || row[4] != "sha256:"+f.SHA256 ||
+				row[5] != "derived:"+llamaRuntimeInput.Name || row[6] != llamaRuntimeURL || row[8] != "monitor/internal/setup/vc_runtime_asset.json" {
+				t.Fatalf("runtime %s: pin row %q", f.Name, row)
+			}
+			continue
+		}
 		kind := "engine"
 		if excluded[f.Name] {
 			kind = "excluded"
@@ -212,24 +221,73 @@ func TestPinRecordsMatchTheLlamaManifest(t *testing.T) {
 }
 
 // OA_LLAMA_B10825_ZIP names a copy of llama-b10825-bin-win-vulkan-x64.zip; the
-// test stages it into a temporary cache and proves the folder. Nothing in it
-// runs.
+// test stages it into a temporary cache and proves the folder. The pinned
+// runtime release input must be beside that source ZIP. Nothing in it runs.
 func TestLiveStageReviewedLlamaBackend(t *testing.T) {
 	archive := os.Getenv("OA_LLAMA_B10825_ZIP")
 	if archive == "" {
 		t.Skip("OA_LLAMA_B10825_ZIP names no copy of llama-b10825-bin-win-vulkan-x64.zip")
 	}
 	cache := filepath.Join(t.TempDir(), "engine-cache")
-	var last, total int64
-	if err := stageBackend(context.Background(), llamaArchive, cache, archive, func(done, all int64) error { last, total = done, all; return nil }, false); err != nil {
+	check := func(want int) {
+		t.Helper()
+		python, tool := os.Getenv("OA_RUNTIME_CHECK_PYTHON"), os.Getenv("OA_RUNTIME_IMPORT_CHECK")
+		if python == "" || tool == "" {
+			return
+		}
+		command := exec.Command(python, tool, llamaArchive.manifest.Dir(cache))
+		output, err := command.CombinedOutput()
+		code := 0
+		if err != nil {
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Fatal(err)
+			}
+			code = exit.ExitCode()
+		}
+		if code != want {
+			t.Fatalf("native import check got %d want %d: %s", code, want, output)
+		}
+		findings := 0
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.HasPrefix(line, "FAIL  ") {
+				findings++
+			}
+		}
+		t.Logf("native PE import check exit %d, findings %d", code, findings)
+	}
+	// Reproduce the publisher-only folder through the same staging owner.
+	before := llamaArchive
+	before.runtime = nil
+	before.manifest.Files = nil
+	for _, file := range llamaArchive.manifest.Files {
+		isRuntime := false
+		for _, runtime := range llamaRuntimeInput.Files {
+			isRuntime = isRuntime || file.Name == runtime.Name
+		}
+		if !isRuntime {
+			before.manifest.Files = append(before.manifest.Files, file)
+		}
+	}
+	if err := stageBackend(context.Background(), before, cache, archive, nil, false); err != nil {
 		t.Fatal(err)
 	}
+	check(1)
+	var last, total int64
+	if err := stageBackend(context.Background(), llamaArchive, cache, archive, func(done, all int64) error { last, total = done, all; return nil }, true); err != nil {
+		t.Fatal(err)
+	}
+	check(0)
 	// The exported step also proves the whole cache, whose image backend
 	// this test does not stage.
 	if err := StageApprovedLlamaBackend(context.Background(), cache, archive, nil, false); !errors.Is(err, server.ErrBackendManifest) {
 		t.Fatalf("llama.cpp staged without the image backend: %v", err)
 	}
-	if last != total || total != llamaArchive.size+llamaArchive.expanded() {
+	var runtimeBytes int64
+	for _, file := range llamaRuntimeInput.Files {
+		runtimeBytes += file.Size
+	}
+	if last != total || total != llamaArchive.size+llamaArchive.expanded()-runtimeBytes {
 		t.Fatalf("progress %d/%d", last, total)
 	}
 	if err := server.VerifyBackendDir(server.LlamaCppVulkanB10825.Dir(cache), server.LlamaCppVulkanB10825); err != nil {

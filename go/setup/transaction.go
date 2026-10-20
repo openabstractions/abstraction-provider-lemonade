@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	cas "github.com/openabstractions/abstraction-cas/go"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -233,7 +233,7 @@ func UnlockEngineFiles(ctx context.Context, root string) ([]string, error) {
 	folders = append(folders, filepath.Join(root, "engine-cache"))
 	unlock := func() error {
 		for _, folder := range folders {
-			if err := enginefiles.UnlockWithin(folder); err != nil {
+			if err := programfiles.UnlockWithin(folder); err != nil {
 				return err
 			}
 		}

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -113,7 +113,7 @@ func TestPackageCheckProvesAStagedTreeWithoutInstallingIt(t *testing.T) {
 		t.Fatalf("the exact tree was refused or reported another pairing: %+v %v", got, err)
 	}
 	if runtime.GOOS == "windows" {
-		if installed, err := enginefiles.Installed(filepath.Join(root, p.Manifest.Name)); err != nil || installed {
+		if installed, err := programfiles.Installed(filepath.Join(root, p.Manifest.Name)); err != nil || installed {
 			t.Fatalf("package check changed the folder ACL: %v %v", installed, err)
 		}
 	}
@@ -173,7 +173,7 @@ func newActivationFixture(t *testing.T) *activationFixture {
 	t.Helper()
 	ctx := context.Background()
 	// The model path limit (CheckModelPath) needs a short root.
-	root, err := os.MkdirTemp("", "oa-act-")
+	root, err := modelFixtureRoot(t, "oa-act-")
 	if err != nil {
 		t.Fatal(err)
 	}

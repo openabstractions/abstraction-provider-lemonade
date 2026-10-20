@@ -4,15 +4,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/openabstractions/abstraction-facade/go/supervision"
 	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginelaunch"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/llamacpp"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/whispercpp"
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/llamacpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/whispercpp"
 )
 
 // ErrForbiddenArgument reports a lemond argument outside the allow-list.
@@ -107,8 +108,8 @@ func newLaunchKeys(random io.Reader) (launchKeys, error) {
 // allow-list.
 var ErrForbiddenEnvironment = errors.New("lemonade: environment variable outside the allow-list")
 
-// childEnvironmentNames is the complete child environment. Nothing is
-// inherited: the Lemonade review's condition 3 drops HF_TOKEN, HF_ENDPOINT,
+// childEnvironmentNames holds the fixed entries; exact selected OA resolver
+// routing is validated separately. The Lemonade review's condition 3 drops HF_TOKEN, HF_ENDPOINT,
 // HF_HOME, HF_HUB_CACHE, every other LEMONADE_* (for example
 // LEMONADE_<RECIPE>_<BACKEND>_BIN, which replaces a backend executable, and
 // LEMONADE_DEFAULTS_PATH), LLAMA_ARG_*, LLAMA_CACHE, proxy variables and
@@ -125,10 +126,14 @@ var childEnvironmentNames = map[string]bool{
 // reviews name no other executable location, and the locked config keeps
 // llamacpp.prefer_system and flm.prefer_system off, so no backend is
 // resolved through PATH.
-func childEnvironment(windowsDir, tempDir string, keys launchKeys) ([]string, error) {
-	env, err := enginelaunch.CleanEnvironment{
+func childEnvironment(windowsDir, tempDir string, keys launchKeys, runtimeEndpoint string) ([]string, error) {
+	set := []string{"LEMONADE_API_KEY=" + keys.api, "LEMONADE_ADMIN_API_KEY=" + keys.admin}
+	if runtimeEndpoint != "" {
+		set = append(set, bootstrap.RuntimeEndpointVariable+"="+runtimeEndpoint)
+	}
+	env, err := supervision.CleanEnvironment{
 		Temp: tempDir, WindowsDir: windowsDir, WindowsDefaultPath: true,
-		Set: []string{"LEMONADE_API_KEY=" + keys.api, "LEMONADE_ADMIN_API_KEY=" + keys.admin},
+		Set: set,
 	}.Build()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrForbiddenEnvironment, err)
@@ -162,17 +167,29 @@ func forbiddenEnvironment(upper string) bool {
 	return strings.HasPrefix(upper, "LEMONADE_") && !launchKeyNames[upper]
 }
 
-func validateEnvironment(env []string) error {
+func validateEnvironment(env []string, runtimeEndpoint string) error {
 	seen := map[string]bool{}
 	for _, item := range env {
 		name, value, ok := strings.Cut(item, "=")
 		upper := strings.ToUpper(name)
-		if !ok || !childEnvironmentNames[upper] || forbiddenEnvironment(upper) || seen[upper] || value == "" {
+		routing := upper == bootstrap.RuntimeEndpointVariable
+		allowed := childEnvironmentNames[upper]
+		if routing {
+			allowed = runtimeEndpoint != "" && name == bootstrap.RuntimeEndpointVariable && value == runtimeEndpoint
+		}
+		if !ok || !allowed || forbiddenEnvironment(upper) || seen[upper] || value == "" {
 			return fmt.Errorf("%w: %q", ErrForbiddenEnvironment, name)
 		}
 		seen[upper] = true
 	}
-	if len(seen) != len(childEnvironmentNames) {
+	expected := len(childEnvironmentNames)
+	if runtimeEndpoint != "" {
+		expected++
+		if !seen[bootstrap.RuntimeEndpointVariable] {
+			return fmt.Errorf("%w: selected runtime missing", ErrForbiddenEnvironment)
+		}
+	}
+	if len(seen) != expected {
 		return fmt.Errorf("%w: incomplete", ErrForbiddenEnvironment)
 	}
 	return nil
@@ -193,11 +210,11 @@ func (s *Server) planFor(cfg Config, keys launchKeys) (LaunchPlan, error) {
 	if err != nil || !filepath.IsAbs(windowsDir) {
 		return LaunchPlan{}, fmt.Errorf("%w: Windows folder: %v", ErrForbiddenEnvironment, err)
 	}
-	env, err := childEnvironment(windowsDir, cfg.TempDir, keys)
+	env, err := childEnvironment(windowsDir, cfg.TempDir, keys, cfg.RuntimeEndpoint)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	if err := validateEnvironment(env); err != nil {
+	if err := validateEnvironment(env, cfg.RuntimeEndpoint); err != nil {
 		return LaunchPlan{}, err
 	}
 	return LaunchPlan{Program: cfg.Program, Args: args, Env: env, Dir: filepath.Dir(cfg.Program)}, nil

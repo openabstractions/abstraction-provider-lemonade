@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 )
 
 // InstallFiles hashes the bound package folder and each present backend
@@ -19,10 +20,10 @@ func InstallFiles(ctx context.Context, b Binding) error {
 	if !filepath.IsAbs(b.Program) || !filepath.IsAbs(b.CacheDir) || !filepath.IsAbs(b.StateDir) {
 		return ErrConfiguration
 	}
-	return installFiles(ctx, enginefiles.NewVerifier(enginefiles.Options{}), b)
+	return installFiles(ctx, programfiles.NewVerifier(programfiles.Options{}), b)
 }
 
-func installFiles(ctx context.Context, v *enginefiles.Verifier, b Binding) error {
+func installFiles(ctx context.Context, v *programfiles.Verifier, b Binding) error {
 	t, err := b.Package.tree(filepath.Dir(b.Program), b.StateDir)
 	if err != nil {
 		return err
@@ -70,7 +71,7 @@ func FilesInstalled(b Binding) (bool, error) {
 		roots = append(roots, bt.tree.Root)
 	}
 	for _, root := range roots {
-		ok, err := enginefiles.Installed(root)
+		ok, err := programfiles.Installed(root)
 		if err != nil || !ok {
 			return false, err
 		}
@@ -79,9 +80,10 @@ func FilesInstalled(b Binding) (bool, error) {
 }
 
 // remedy names the step that installs the engine files again after a folder
-// ACL refusal; it leaves the private model as it is.
+// ACL refusal, which remains only when LaunchRepairing could not set the ACL
+// again; it leaves the private model as it is.
 func remedy(err error) error {
-	if errors.Is(err, enginefiles.ErrFolderACL) {
+	if errors.Is(err, programfiles.ErrFolderACL) {
 		return fmt.Errorf("%w: run lemonaded configure --activate-reviewed-package --engine-files-only, or the Lemonade setup step in Abstraction Panel", err)
 	}
 	return err
@@ -103,7 +105,7 @@ type heldTrees struct {
 // ErrUnavailable and ErrBackendManifest; a model refusal wraps
 // ErrConfiguration and ErrWeightFormat.
 func (s *Server) holdFiles(ctx context.Context, cfg Config) (func() error, heldTrees, error) {
-	var held []*enginefiles.Hold
+	var held []*programfiles.Hold
 	release := func() error {
 		var errs []error
 		for _, h := range held {
@@ -117,7 +119,7 @@ func (s *Server) holdFiles(ctx context.Context, cfg Config) (func() error, heldT
 		if err != nil {
 			return nil, heldTrees{}, fmt.Errorf("%w: %w", ErrConfiguration, err)
 		}
-		h, err := s.files.Launch(ctx, t)
+		h, _, err := s.files.LaunchRepairing(ctx, t, log.Writer())
 		if err != nil {
 			return nil, heldTrees{}, fmt.Errorf("%w: %w: %w", ErrConfiguration, ErrPackageManifest, remedy(err))
 		}
@@ -130,7 +132,7 @@ func (s *Server) holdFiles(ctx context.Context, cfg Config) (func() error, heldT
 		return nil, heldTrees{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	for _, b := range trees {
-		h, err := s.files.Launch(ctx, b.tree)
+		h, _, err := s.files.LaunchRepairing(ctx, b.tree, log.Writer())
 		if err != nil {
 			release()
 			return nil, heldTrees{}, fmt.Errorf("%w: %w", ErrUnavailable, b.m.refusal(remedy(err)))
@@ -151,7 +153,7 @@ func (s *Server) holdFiles(ctx context.Context, cfg Config) (func() error, heldT
 		return nil, heldTrees{}, fmt.Errorf("%w: %w", ErrConfiguration, err)
 	}
 	for _, m := range models {
-		h, err := s.files.Launch(ctx, m.tree)
+		h, _, err := s.files.LaunchRepairing(ctx, m.tree, log.Writer())
 		if err != nil {
 			release()
 			return nil, heldTrees{}, fmt.Errorf("%w: %w: %s: %w", ErrConfiguration, ErrWeightFormat, m.tree.Name, remedy(err))

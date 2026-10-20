@@ -27,7 +27,7 @@ type configureFixture struct {
 func newConfigureFixture(t *testing.T) *configureFixture {
 	t.Helper()
 	// The model path limit (CheckModelPath) needs a short root.
-	root, err := os.MkdirTemp("", "oa-klein-")
+	root, err := modelFixtureRoot(t, "oa-klein-")
 	if err != nil {
 		t.Fatal(err)
 	}

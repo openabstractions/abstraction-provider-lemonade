@@ -39,3 +39,11 @@ the page says `lemonaded` takes no lease.
 - `research/security-reviews/`: the Lemonade 2026.39.1, stable-diffusion.cpp
   master-843-462d675, llama.cpp b10825, whisper.cpp v1.8.4 and Kokoros b17
   reviews.
+
+## 0.8.0 contract truth pass (W0-04), 2026-10-21
+
+Each changed or reviewed statement with its class: an outdated rule is text the code has passed, a code defect is code or IDL that breaks a rule and becomes a TODO row, an accepted divergence is recorded under Divergences.
+
+| statement | class | action |
+| --- | --- | --- |
+| Lease size, quarantine and double-counted lease unstated | outdated rule | stated under Not built with their TODO rows (D1a, D1b) |

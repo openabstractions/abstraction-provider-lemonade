@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 
 	identity "github.com/openabstractions/abstraction-identity"
 )
@@ -88,36 +88,36 @@ func (m BackendManifest) Dir(cacheDir string) string {
 // content must equal Version and whose exact bytes the tree then pins. The
 // folder may hold nothing else. Windows loads a DLL planted beside an
 // executable, so an extra file is as unsafe as a changed one.
-func (m BackendManifest) tree(dir, stateDir string) (enginefiles.Tree, error) {
+func (m BackendManifest) tree(dir, stateDir string) (programfiles.Tree, error) {
 	if !m.valid() {
-		return enginefiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrBackendManifest)
+		return programfiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrBackendManifest)
 	}
 	info, err := os.Lstat(dir)
 	if err != nil {
-		return enginefiles.Tree{}, fmt.Errorf("%w: %s/%s missing", ErrBackendManifest, m.Family, m.Variant)
+		return programfiles.Tree{}, fmt.Errorf("%w: %s/%s missing", ErrBackendManifest, m.Family, m.Variant)
 	}
 	if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-		return enginefiles.Tree{}, fmt.Errorf("%w: %s/%s is not a plain folder", ErrBackendManifest, m.Family, m.Variant)
+		return programfiles.Tree{}, fmt.Errorf("%w: %s/%s is not a plain folder", ErrBackendManifest, m.Family, m.Variant)
 	}
 	version, err := readSmall(filepath.Join(dir, "version.txt"), 256)
 	if errors.Is(err, fs.ErrNotExist) {
-		return enginefiles.Tree{}, fmt.Errorf("%w: %s/%s: version.txt missing", ErrBackendManifest, m.Family, m.Variant)
+		return programfiles.Tree{}, fmt.Errorf("%w: %s/%s: version.txt missing", ErrBackendManifest, m.Family, m.Variant)
 	}
 	if err != nil || strings.TrimSpace(string(version)) != m.Version {
-		return enginefiles.Tree{}, fmt.Errorf("%w: %s/%s: version is not %s; %s", ErrBackendManifest, m.Family, m.Variant, m.Version, m.replaceCommand())
+		return programfiles.Tree{}, fmt.Errorf("%w: %s/%s: version is not %s; %s", ErrBackendManifest, m.Family, m.Variant, m.Version, m.replaceCommand())
 	}
 	return m.treeWith(dir, stateDir, version), nil
 }
 
 // treeWith is the backend folder's tree whose version.txt holds version.
-func (m BackendManifest) treeWith(dir, stateDir string, version []byte) enginefiles.Tree {
+func (m BackendManifest) treeWith(dir, stateDir string, version []byte) programfiles.Tree {
 	sum := sha256.Sum256(version)
-	files := []enginefiles.File{{Path: "version.txt", Size: int64(len(version)), SHA256: hex.EncodeToString(sum[:])}}
+	files := []programfiles.File{{Path: "version.txt", Size: int64(len(version)), SHA256: hex.EncodeToString(sum[:])}}
 	for _, f := range m.Required() {
-		files = append(files, enginefiles.File{Path: f.Name, Size: f.Size, SHA256: f.SHA256})
+		files = append(files, programfiles.File{Path: f.Name, Size: f.Size, SHA256: f.SHA256})
 	}
-	return enginefiles.Tree{
-		Name: m.Family + "/" + m.Variant, Root: dir, Manifest: enginefiles.Manifest{Files: files},
+	return programfiles.Tree{
+		Name: m.Family + "/" + m.Variant, Root: dir, Manifest: programfiles.Manifest{Files: files},
 		Record: filepath.Join(stateDir, "backend-"+m.Family+"-"+m.Variant+".files"),
 	}
 }
@@ -129,9 +129,9 @@ func (m BackendManifest) VersionFile() []byte { return []byte(m.Version + "\n") 
 // StagedTree is the tree setup installs into `<cacheDir>/bin/<family>/<variant>`
 // from the reviewed archive: the required files and VersionFile, recorded
 // under stateDir as every launch reads it.
-func (m BackendManifest) StagedTree(cacheDir, stateDir string) (enginefiles.Tree, error) {
+func (m BackendManifest) StagedTree(cacheDir, stateDir string) (programfiles.Tree, error) {
 	if !m.valid() {
-		return enginefiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrBackendManifest)
+		return programfiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrBackendManifest)
 	}
 	return m.treeWith(m.Dir(cacheDir), stateDir, m.VersionFile()), nil
 }
@@ -143,7 +143,7 @@ func (m BackendManifest) StagedTree(cacheDir, stateDir string) (enginefiles.Tree
 func (m BackendManifest) replaceCommand() string {
 	const step = "run lemonaded configure --activate-reviewed-package --engine-files-only"
 	if m.Family == "llamacpp" {
-		return step + " --llamacpp-backend-archive <llama-" + m.Version + "-bin-win-vulkan-x64.zip> --replace-backend"
+		return step + " --llamacpp-backend-archive <llama-" + m.Version + "-bin-win-vulkan-x64.zip> --replace-backend; place " + llamaRuntimeArchive + " beside the publisher ZIP"
 	}
 	return step + " --vulkan-backend-archive <reviewed archive> --replace-backend"
 }
@@ -151,15 +151,15 @@ func (m BackendManifest) replaceCommand() string {
 // refusal wraps a shared-kit refusal of the backend folder in
 // ErrBackendManifest and names an excluded file as excluded.
 func (m BackendManifest) refusal(err error) error {
-	var mismatch *enginefiles.MismatchError
-	if errors.As(err, &mismatch) && mismatch.Kind == enginefiles.Extra {
+	var mismatch *programfiles.MismatchError
+	if errors.As(err, &mismatch) && mismatch.Kind == programfiles.Extra {
 		for _, name := range m.Excluded {
 			if identity.SamePathName(mismatch.Path, name) {
 				return fmt.Errorf("%w: %s/%s: excluded file present: %s", ErrBackendManifest, m.Family, m.Variant, mismatch.Path)
 			}
 		}
 	}
-	return fmt.Errorf("%w: %w", ErrBackendManifest, err)
+	return fmt.Errorf("%w: %w; %s", ErrBackendManifest, err, m.replaceCommand())
 }
 
 // VerifyBackendDir hashes every file in dir against m and refuses any entry
@@ -170,7 +170,7 @@ func VerifyBackendDir(dir string, m BackendManifest) error {
 	if err != nil {
 		return err
 	}
-	if err := enginefiles.Verify(context.Background(), t.Name, t.Root, t.Manifest); err != nil {
+	if err := programfiles.Verify(context.Background(), t.Name, t.Root, t.Manifest); err != nil {
 		return m.refusal(err)
 	}
 	return nil
@@ -195,7 +195,7 @@ func readSmall(path string, limit int64) ([]byte, error) {
 // backendTree is one present backend folder with the manifest that pins it.
 type backendTree struct {
 	m    BackendManifest
-	tree enginefiles.Tree
+	tree programfiles.Tree
 }
 
 // backendTrees admits only reviewed backends in Lemonade's `<cache>/bin` and
@@ -269,7 +269,7 @@ func CheckBackendTree(cacheDir string, sd, llama BackendManifest, requireSD bool
 		return err
 	}
 	for _, b := range trees {
-		if err := enginefiles.Verify(context.Background(), b.tree.Name, b.tree.Root, b.tree.Manifest); err != nil {
+		if err := programfiles.Verify(context.Background(), b.tree.Name, b.tree.Root, b.tree.Manifest); err != nil {
 			return b.m.refusal(err)
 		}
 	}
@@ -327,13 +327,13 @@ var llamaCppExcluded = []string{
 // llama-b10825-bin-win-vulkan-x64.zip, 35,227,898 bytes, SHA-256
 // 8907e5f3b74cb57d93fd94e187a87d85be24dc64e3b0ff2bc1b287da17b31446 (GitHub's
 // asset digest; Sigstore attestation verified by the review). Condition 5
-// keeps 24 files: llama-server.exe, the libraries its import tables reach,
-// the ggml CPU and Vulkan backends and the OpenMP licence.
-// installer/third-party.tsv records the same 52 files with this file as
-// their authority.
+// keeps 27 files: llama-server.exe, the libraries its import tables reach,
+// the ggml CPU and Vulkan backends, the OpenMP licence and three pinned runtime
+// files. installer/third-party.tsv records the 52 publisher files with this
+// file as their authority; the three runtime rows cite vc_runtime_asset.json.
 var LlamaCppVulkanB10825 = BackendManifest{
 	Family: "llamacpp", Variant: "vulkan", Version: "b10825",
-	Files: []ManifestFile{
+	Files: append([]ManifestFile{
 		{"LICENSE-LLVM-OpenMP", 19741, "fdad1758a9e1f9d5a81e18879b3406772115edc92c24bfa36b70c654f325e8e4"},
 		{"ggml-base.dll", 796160, "40090a7e59b1e26f1e8c6483dd7b0d935a5dad7036c29347616d7c88bc7754e1"},
 		{"ggml-cpu-alderlake.dll", 1230336, "45ede07bf41f84a15fcdf62e572259ce6051ca6512e2ff0701cd19ecc9c3897e"},
@@ -386,7 +386,7 @@ var LlamaCppVulkanB10825 = BackendManifest{
 		{"llama.dll", 3143168, "46d129df4f270ee91ef49d95173548321d6ab3ab08d03452f8985de9a783e5b4"},
 		{"llama.exe", 103936, "d632af6b5ee183f7f1b4f52b4f1c04f9fe04f22365cde506beeb7937379a73a5"},
 		{"mtmd.dll", 1771008, "e774481b5f4c874477e4958cff4d0ca2741dcd3078561c1b9e43ac6b067bceee"},
-	},
+	}, llamaRuntimeFiles()...),
 	Excluded: llamaCppExcluded,
 }
 

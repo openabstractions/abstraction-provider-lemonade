@@ -14,20 +14,44 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
 	"github.com/openabstractions/abstraction-identity/listen"
+	"github.com/openabstractions/abstraction-provider-lemonade/go/provider"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/setup"
 )
 
-// standInCache points the person's cache folder (os.UserCacheDir:
-// LOCALAPPDATA on Windows, XDG_CACHE_HOME on Linux, $HOME/Library/Caches on
-// macOS) and LOCALAPPDATA at one temporary folder, so no test reads or
-// writes this account's provider state.
+func TestCaptureRuntimeEndpoint(t *testing.T) {
+	t.Setenv("ABSTRACTION_RUNTIME_ENDPOINT", "selected-private")
+	cfg := provider.Config{}
+	captureRuntimeEndpoint(&cfg)
+	if cfg.Server.RuntimeEndpoint != "selected-private" {
+		t.Fatal(cfg.Server.RuntimeEndpoint)
+	}
+	t.Setenv("ABSTRACTION_RUNTIME_ENDPOINT", "later-ambient")
+	if cfg.Server.RuntimeEndpoint != "selected-private" {
+		t.Fatal("capture changed")
+	}
+	cfg.Server.RuntimeEndpoint = "explicit-private"
+	captureRuntimeEndpoint(&cfg)
+	if cfg.Server.RuntimeEndpoint != "explicit-private" {
+		t.Fatal("explicit selection lost")
+	}
+	t.Setenv("ABSTRACTION_RUNTIME_ENDPOINT", "")
+	cfg.Server.RuntimeEndpoint = ""
+	captureRuntimeEndpoint(&cfg)
+	if cfg.Server.RuntimeEndpoint != "" {
+		t.Fatal("installed default changed")
+	}
+}
+
+// standInCache isolates provider data, caches and package paths.
 func standInCache(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("LOCALAPPDATA", dir)
 	t.Setenv("XDG_CACHE_HOME", dir)
+	t.Setenv("XDG_DATA_HOME", dir)
 	t.Setenv("HOME", dir)
 }
 
@@ -41,7 +65,7 @@ func TestInstalledSetupBridgeIsReadOnlyAndUsesDeclarationIdentity(t *testing.T) 
 	if err := writeSetupInfo(&out); err != nil {
 		t.Fatal(err)
 	}
-	var info setupInfo
+	var info setup.SetupInfoReply
 	decoder := json.NewDecoder(bytes.NewReader(out.Bytes()))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&info); err != nil {
@@ -109,9 +133,16 @@ func TestSetupInfoNamesTheActivePackageAndEveryKnownPackage(t *testing.T) {
 	if err := setup.Save(setup.SelectionPath(root), setup.Selection{Version: setup.SelectionVersion, Package: second.ID, Activated: true, Models: []string{setup.ApprovedModel}}); err != nil {
 		t.Fatal(err)
 	}
+	// A folder configured before installed.json existed gets one here.
+	if err := os.Remove(setup.InstalledPath(root)); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
 	if err := writeSetupInfo(&out); err != nil {
 		t.Fatal(err)
+	}
+	if info, err := os.Lstat(setup.InstalledPath(root)); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("setup-info wrote no installed.json: %v", err)
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
@@ -125,7 +156,7 @@ func TestSetupInfoNamesTheActivePackageAndEveryKnownPackage(t *testing.T) {
 	if raw["package_program"] != nil || len(raw) != 8 {
 		t.Fatalf("setup-info carries other fields: %s", out.String())
 	}
-	var info setupInfo
+	var info setup.SetupInfoReply
 	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
 		t.Fatal(err)
 	}
@@ -136,9 +167,9 @@ func TestSetupInfoNamesTheActivePackageAndEveryKnownPackage(t *testing.T) {
 	if info.Version != 2 || !info.SelectionPresent || info.ActivePackage == nil || info.ActivePackage.Version != "v2026.40.0" || info.ActivePackage.Program != program {
 		t.Fatalf("active package: %+v", info.ActivePackage)
 	}
-	want := []knownPackage{
-		{saved[0].Version, saved[0].ArchiveSHA256, saved[0].ProgramSHA256, saved[0].BackendArchiveSHA256, saved[0].ModelRevision},
-		{"v2026.40.0", strings.Repeat("c", 64), second.ProgramSHA256, second.BackendArchiveSHA256, second.ModelRevision},
+	want := []setup.KnownPackageInfo{
+		{Version: saved[0].Version, ArchiveSHA256: saved[0].ArchiveSHA256, ProgramSHA256: saved[0].ProgramSHA256, BackendArchiveSHA256: saved[0].BackendArchiveSHA256, ModelRevision: saved[0].ModelRevision},
+		{Version: "v2026.40.0", ArchiveSHA256: strings.Repeat("c", 64), ProgramSHA256: second.ProgramSHA256, BackendArchiveSHA256: second.BackendArchiveSHA256, ModelRevision: second.ModelRevision},
 	}
 	if len(info.KnownPackages) != 2 || info.KnownPackages[0] != want[0] || info.KnownPackages[1] != want[1] {
 		t.Fatalf("known packages %+v, want %+v", info.KnownPackages, want)
@@ -182,20 +213,25 @@ func TestPackageVerbs(t *testing.T) {
 	if err := packageCommand(context.Background(), root, []string{"retire", "--version", "v2026.39.1"}, &out, io.Discard); err != nil {
 		t.Fatalf("retiring a version with no folders: %v", err)
 	}
-	var reply struct {
-		Version int  `json:"version"`
-		OK      bool `json:"ok"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &reply); err != nil || reply.Version != 1 || !reply.OK {
-		t.Fatalf("retire reply %q: %v", out.String(), err)
+	if got, want := out.String(), "{\"version\":1,\"ok\":true}\n"; got != want {
+		t.Fatalf("retire reply %q, want %q", got, want)
 	}
 }
 
 func TestInstalledDeclarationEndpoint(t *testing.T) {
 	standInCache(t)
-	want := listen.Endpoint("lemonade-image")
+	if _, err := installedEndpoint("lemonade-image"); !errors.Is(err, bootstrap.ErrNoTrustedInstallation) {
+		t.Fatalf("default wrapper refusal: %v", err)
+	}
+	want := `\\.\pipe\oa-test-lemonade-image`
+	endpointFor := func(name string) (string, error) {
+		if name != "lemonade-image" {
+			t.Fatal(name)
+		}
+		return want, nil
+	}
 	for _, arg := range []string{"lemonade-image", want} {
-		got, err := installedEndpoint(arg)
+		got, err := installedEndpointFor(arg, endpointFor)
 		if err != nil || got != want {
 			t.Fatalf("declared endpoint %q: %q, %v", arg, got, err)
 		}
@@ -203,15 +239,15 @@ func TestInstalledDeclarationEndpoint(t *testing.T) {
 	namespaced := listen.Endpoint("provider-" + strings.Repeat("a", 32))
 	// The runtime's namespaced provider endpoint is a Windows pipe name; the
 	// reviewed Lemonade package runs on Windows x64 only.
-	if got, err := installedEndpoint(namespaced); runtime.GOOS == "windows" && (err != nil || got != namespaced) {
+	if got, err := installedEndpointFor(namespaced, endpointFor); runtime.GOOS == "windows" && (err != nil || got != namespaced) {
 		t.Fatalf("runtime namespaced endpoint refused: %q, %v", got, err)
 	}
 	for _, bad := range []string{"provider-" + strings.Repeat("a", 32), listen.Endpoint("provider-" + strings.Repeat("A", 32)), "http://127.0.0.1:8000", namespaced + "x"} {
-		if _, err := installedEndpoint(bad); !errors.Is(err, setup.ErrSelection) {
+		if _, err := installedEndpointFor(bad, endpointFor); !errors.Is(err, setup.ErrSelection) {
 			t.Fatalf("foreign endpoint %q accepted: %v", bad, err)
 		}
 	}
-	if _, err := installedEndpoint("other-provider"); !errors.Is(err, setup.ErrSelection) {
+	if _, err := installedEndpointFor("other-provider", endpointFor); !errors.Is(err, setup.ErrSelection) {
 		t.Fatalf("foreign endpoint accepted: %v", err)
 	}
 }
@@ -270,6 +306,14 @@ func TestConfigureFlags(t *testing.T) {
 	}
 }
 
+func TestConfigureHelpNamesPinnedRuntimeBesidePublisherArchive(t *testing.T) {
+	var out strings.Builder
+	_, err := parseConfigure([]string{"--help"}, &out)
+	if err == nil || !strings.Contains(out.String(), "publisher archive beside "+llamaRuntimeArchive) {
+		t.Fatalf("configure help omits paired input: %v, %s", err, out.String())
+	}
+}
+
 // setup-info names the staged models the selection serves, in its order,
 // and an empty list before any setup.
 func TestSetupInfoNamesTheStagedModels(t *testing.T) {
@@ -278,12 +322,12 @@ func TestSetupInfoNamesTheStagedModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := func() setupInfo {
+	read := func() setup.SetupInfoReply {
 		var out bytes.Buffer
 		if err := writeSetupInfo(&out); err != nil {
 			t.Fatal(err)
 		}
-		var info setupInfo
+		var info setup.SetupInfoReply
 		if err := json.Unmarshal(out.Bytes(), &info); err != nil || info.StagedModels == nil {
 			t.Fatalf("setup-info %q: %v", out.String(), err)
 		}

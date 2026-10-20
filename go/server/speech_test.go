@@ -11,14 +11,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	supervision "github.com/openabstractions/abstraction-facade/go/supervision"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/whispercpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/whispercpp"
 )
 
 // Kokoros condition 1 and whisper.cpp condition 1: the manifests are the
@@ -125,7 +126,7 @@ func TestForbiddenEnvironmentCoversTheSpeechEngines(t *testing.T) {
 		if !forbiddenEnvironment(name) {
 			t.Errorf("%s admitted", name)
 		}
-		if err := validateEnvironment([]string{name + "=x"}); !errors.Is(err, ErrForbiddenEnvironment) {
+		if err := validateEnvironment([]string{name + "=x"}, ""); !errors.Is(err, ErrForbiddenEnvironment) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -274,7 +275,7 @@ func TestCheckAudioBody(t *testing.T) {
 func TestAudioReadiness(t *testing.T) {
 	windowsLaunch(t)
 	models := filepath.Join(t.TempDir(), "models")
-	env, err := childEnvironment(`C:\Windows`, filepath.Join(t.TempDir(), "temp"), launchKeys{api: strings.Repeat("a", 64), admin: strings.Repeat("b", 64)})
+	env, err := childEnvironment(`C:\Windows`, filepath.Join(t.TempDir(), "temp"), launchKeys{api: strings.Repeat("a", 64), admin: strings.Repeat("b", 64)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,6 +288,17 @@ func TestAudioReadiness(t *testing.T) {
 		if err := ready().audioReadyLocked(route); err != nil {
 			t.Fatalf("%s: %v", route, err)
 		}
+	}
+	selected := ready()
+	selected.launched.RuntimeEndpoint = "private-selected"
+	selected.cfg.RuntimeEndpoint = "later-config"
+	selected.launchEnv = append(slices.Clone(env), "ABSTRACTION_RUNTIME_ENDPOINT=private-selected")
+	if err := selected.audioReadyLocked(SpeechRoute); err != nil {
+		t.Fatal(err)
+	}
+	selected.launchEnv = append(slices.Clone(env), "ABSTRACTION_RUNTIME_ENDPOINT=later-config")
+	if err := selected.audioReadyLocked(SpeechRoute); err == nil {
+		t.Fatal("audio accepted current config over launched selection")
 	}
 	condition := func(err error) string {
 		var refusal *AudioRefusal

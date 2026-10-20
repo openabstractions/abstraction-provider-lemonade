@@ -175,7 +175,9 @@ func stageModel(ctx context.Context, root string, m server.ImageModel, catalogue
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
-	if err := writeAtomic(filepath.Join(configDir, "user_models.json"), registry); err != nil {
+	if err := writeAtomicWithRetry(filepath.Join(configDir, "user_models.json"), registry, func(publish func() error) error {
+		return retryPublicationRename(ctx, publish)
+	}); err != nil {
 		return err
 	}
 	return Save(SelectionPath(root), next)

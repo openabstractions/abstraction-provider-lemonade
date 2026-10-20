@@ -49,16 +49,19 @@ func TestAnUnconfirmedTreeExitKeepsTheLease(t *testing.T) {
 // servedProviders numbers the served test providers' endpoints.
 var servedProviders atomic.Int64
 
+const cardLifecycleModel = "user.CardLifecycleTest"
+
 // newServedProvider is a provider whose card runs fakeTree in place of
-// Lemonade.
+// Lemonade. Its operator-defined test model uses an explicit lease estimate;
+// reviewed models retain their real staged-file admission requirements.
 func newServedProvider(t *testing.T, leases *fakeLeases) (*Provider, *fakeTree) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := Config{Endpoint: providerEndpoint(t, fmt.Sprintf("lemonade-card-serve-%d-%d", os.Getpid(), servedProviders.Add(1))),
 		RuntimePrograms: []string{os.Args[0]}, StoreRoot: filepath.Join(dir, "store"), RecordPath: filepath.Join(dir, "records.json"),
-		Leases: leases, Renew: 5 * time.Millisecond, Wait: time.Second,
+		Leases: leases, Amount: 1 << 30, Renew: 5 * time.Millisecond, Wait: time.Second,
 		Server: server.Config{Program: os.Args[0], CacheDir: filepath.Join(dir, "cache"), ConfigDir: filepath.Join(dir, "config"), Port: 41234,
-			Models: []string{"user.LocalApprovedKlein"}}}
+			Models: []string{cardLifecycleModel}}}
 	p, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +118,7 @@ func TestAYieldIsRefusedWhileAnImageOperationIsHeld(t *testing.T) {
 	defer p.Close()
 	ctx := inference.WithDesignatedRuntime(inference.WithRoute(context.Background(), inference.RouteNative, os.Args[0]))
 	caller := inference.Subject{Account: "test", Program: os.Args[0]}
-	a := p.Host.Provider.StartImage(ctx, caller, wire.ImageRequest{Model: "user.LocalApprovedKlein", Prompt: "a lighthouse",
+	a := p.Host.Provider.StartImage(ctx, caller, wire.ImageRequest{Model: cardLifecycleModel, Prompt: "a lighthouse",
 		Mode: wire.ImageModeGenerate, Count: 1, Size: "512x512"})
 	if a.Outcome != wire.StartOutcomeAccepted {
 		t.Fatalf("admission %+v", a)

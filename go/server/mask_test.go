@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	media "github.com/openabstractions/abstraction-inference/go/mediationcontent"
 	"image"
 	"image/color"
 	"image/png"
@@ -10,8 +11,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"testing"
-
-	"github.com/openabstractions/abstraction-inference/go/providerhost/sdcpp"
 )
 
 // contractMask is an [INF-I1] mask: an RGBA PNG whose fully transparent
@@ -124,7 +123,7 @@ func TestEditMaskRefusals(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := forwardedMask(t, formPart{name: "image", file: "image.png", media: "image/png", data: input}, mask)
-			if !errors.Is(err, ErrImageRoute) || !errors.Is(err, sdcpp.ErrRequestForm) {
+			if !errors.Is(err, ErrImageRoute) || !errors.Is(err, media.ErrRequestForm) {
 				t.Fatalf("admitted: %v", err)
 			}
 		})

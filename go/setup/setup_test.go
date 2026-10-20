@@ -6,16 +6,56 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
 	"github.com/openabstractions/abstraction-identity/listen"
+	"github.com/openabstractions/abstraction-identity/placetest"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/provider"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 	res "github.com/openabstractions/abstraction-resource/go/client"
 )
+
+// modelFixtureRoot retains the existing physical TEMP owner while leaving
+// room for the real engine's model filename below a nested development TEMP.
+func modelFixtureRoot(t *testing.T, prefix string) (string, error) {
+	t.Helper()
+	root, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", err
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Error(err)
+		}
+	})
+	if CheckModelPath(root, approvedRevision) == nil {
+		return root, nil
+	}
+	short, err := placetest.ShortName(root)
+	if err != nil {
+		return "", err
+	}
+	original, err := os.Stat(root)
+	if err != nil {
+		return "", err
+	}
+	alias, err := os.Stat(short)
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(original, alias) {
+		return "", errors.New("fixture short name changed TEMP owner")
+	}
+	if err := CheckModelPath(short, approvedRevision); err != nil {
+		return "", err
+	}
+	return short, nil
+}
 
 // standInCache points the person's cache folder (os.UserCacheDir:
 // LOCALAPPDATA on Windows, XDG_CACHE_HOME on Linux, $HOME/Library/Caches on
@@ -44,7 +84,11 @@ func (idleLeases) Acquire(string, int64, time.Duration) (res.AcquireResult, erro
 func (idleLeases) BindProcess(string, int) (res.ProcessBindResult, error) {
 	return res.ProcessBindResult{}, nil
 }
-func (idleLeases) Renew(string) (res.LeaseChange, error)   { return res.LeaseChange{}, nil }
+func (idleLeases) Renew(string) (res.LeaseChange, error) { return res.LeaseChange{}, nil }
+func (idleLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (idleLeases) Release(string) (res.LeaseChange, error) { return res.LeaseChange{}, nil }
 func (idleLeases) Observe(ctx context.Context, _ string, _ time.Duration) (res.YieldPage, error) {
 	<-ctx.Done()
@@ -90,7 +134,8 @@ func TestApprovedVulkanBackendHashesEveryFile(t *testing.T) {
 }
 
 func TestPackagedSelectionDerivesPrivatePathsAndRuntimeIdentity(t *testing.T) {
-	root, err := os.MkdirTemp("", "oa-lemonade-")
+	t.Setenv("OA_TEST_ALLOW_INSTALLED_RUNTIME", "")
+	root, err := modelFixtureRoot(t, "oa-lemonade-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,14 +163,35 @@ func TestPackagedSelectionDerivesPrivatePathsAndRuntimeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var endpointName string
 	steps := resolveSteps{
 		program:       func(server.Package) (string, error) { return engineProgram, nil },
 		verifyPackage: func(server.Package) (string, error) { return engineProgram, nil },
 		verifyBackend: func(string, server.Package) error { return nil },
+		endpoint: func(name string) (string, error) {
+			endpointName = name
+			return listen.Endpoint(name), nil
+		},
 	}
 	cfg, err := resolve(read, providerProgram, state, steps)
 	if err != nil {
 		t.Fatal(err)
+	}
+	account, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := endpointKey(account.Uid, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpointName != "lemonade-"+key || cfg.Endpoint != listen.Endpoint(endpointName) {
+		t.Fatalf("private endpoint identity lost: %q, %q", endpointName, cfg.Endpoint)
+	}
+	installedSteps := steps
+	installedSteps.endpoint = bootstrap.Endpoint
+	if _, err := resolve(read, providerProgram, state, installedSteps); !errors.Is(err, bootstrap.ErrNoTrustedInstallation) {
+		t.Fatalf("implicit installed endpoint admitted without test authority: %v", err)
 	}
 	if !cfg.Server.RequireVulkanBackend || cfg.Server.Bind == nil ||
 		len(cfg.RuntimePrograms) != 1 || cfg.RuntimePrograms[0] != runtimeProgram || cfg.Name != ProviderID ||
@@ -272,7 +338,7 @@ func TestSelectionReplacementRetainsPriorValueOnRefusal(t *testing.T) {
 func TestModelPathLengthBoundary(t *testing.T) {
 	// A short temporary root: the test's own folder name can already use up
 	// the Windows limit under a long temporary folder (macOS /var/folders).
-	root, err := os.MkdirTemp("", "m")
+	root, err := modelFixtureRoot(t, "m")
 	if err != nil {
 		t.Fatal(err)
 	}

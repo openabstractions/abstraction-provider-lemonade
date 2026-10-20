@@ -12,7 +12,7 @@ import (
 	"time"
 
 	inference "github.com/openabstractions/abstraction-inference/go"
-	"github.com/openabstractions/abstraction-inference/go/providerhost"
+	"github.com/openabstractions/abstraction-provider-kit/go/providerhost"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 	"github.com/openabstractions/abstraction-resource/go/gpufault"
 	"github.com/openabstractions/abstraction-resource/go/holder"
@@ -151,6 +151,9 @@ func admitter(s *server.Server, host *router.Host, ensure func(context.Context) 
 				report(onError, err)
 				return server.RefusalReason(err), false
 			}
+		} else if err := s.ImageStaged(ctx, model); err != nil {
+			report(onError, err)
+			return server.RefusalReason(err), false
 		}
 		// The typed reason goes to the caller; the full error, which names
 		// the file, socket or lease, goes to the provider's own log.

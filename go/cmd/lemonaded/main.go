@@ -11,13 +11,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
+	registration "github.com/openabstractions/abstraction-facade/go/abstraction/facade/registration"
 	"github.com/openabstractions/abstraction-identity/listen"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/provider"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
@@ -26,6 +30,12 @@ import (
 )
 
 func main() {
+	if declarationInvocation(os.Args[1:]) {
+		if err := declarationCommand(os.Args[1:], os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
 	rest, err := applyRootOptions(os.Args[1:])
 	if err != nil {
 		fail(err)
@@ -39,11 +49,12 @@ func main() {
 		serveInstalled(args[3])
 		return
 	}
-	if args[1] == "configure" {
+	words := setup.SetupCLIWords()
+	if args[1] == words.Configure {
 		configure(args[2:])
 		return
 	}
-	if args[1] == "package" {
+	if args[1] == words.Package {
 		root, err := providerRoot()
 		if err != nil {
 			fail(err)
@@ -53,7 +64,7 @@ func main() {
 		}
 		return
 	}
-	if args[1] == "model" {
+	if args[1] == words.Model {
 		root, err := providerRoot()
 		if err != nil {
 			fail(err)
@@ -69,9 +80,9 @@ func main() {
 		}
 		return
 	}
-	if len(args) == 3 && args[2] == "--json" {
+	if len(args) == 3 && args[2] == "--"+words.JSON {
 		switch args[1] {
-		case "setup-info":
+		case words.Info:
 			if err := writeSetupInfo(os.Stdout); err != nil {
 				fail(err)
 			}
@@ -81,7 +92,7 @@ func main() {
 				fail(err)
 			}
 			return
-		case "verify-setup":
+		case words.Verify:
 			if err := writeVerifiedSetup(os.Stdout); err != nil {
 				fail(err)
 			}
@@ -89,6 +100,76 @@ func main() {
 		}
 	}
 	advanced(args[1:])
+}
+
+func declarationCommand(args []string, input io.Reader, output io.Writer) error {
+	if len(args) == 2 && args[0] == "declare" && (args[1] == "--help" || args[1] == "-h") {
+		_, err := io.WriteString(output, "Usage: declare\nRead one typed RegistrationSpec from standard input (at most 262144 bytes), refresh the producer's exact reviewed engine/recipe facts, and write the generated declaration to standard output. Reads no setup, engine or model state and starts no provider.\n")
+		return err
+	}
+	if len(args) != 1 || args[0] != "declare" {
+		return errors.New("declare reads one typed RegistrationSpec from standard input and takes no options")
+	}
+	return writeDeclaration(input, output)
+}
+
+func declarationInvocation(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		name, _, inline := strings.Cut(args[i], "=")
+		if name == "--state" || name == "--dir" {
+			if !inline {
+				i++
+			}
+			continue
+		}
+		return args[i] == "declare"
+	}
+	return false
+}
+
+// writeDeclaration refreshes exact producer facts in an explicitly supplied
+// native declaration. It runs before root options, bootstrap or setup access.
+func writeDeclaration(input io.Reader, output io.Writer) (err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			if refusal, ok := value.(*registration.Refusal); ok {
+				err = refusal
+				return
+			}
+			panic(value)
+		}
+	}()
+	const limit = 262144
+	raw, err := io.ReadAll(io.LimitReader(input, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > limit {
+		return errors.New("registration input exceeds 262144 bytes")
+	}
+	spec, err := registration.DecodeRegistrationSpec(raw)
+	if err != nil {
+		return err
+	}
+	if len(spec.Providers) == 0 || len(spec.Servers)+len(spec.Remotes)+len(spec.Applications) != 0 {
+		return errors.New("declare requires native provider facets")
+	}
+	program, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	spec.Program = program
+	for i := range spec.Providers {
+		facet := &spec.Providers[i]
+		facet.Engines, facet.Recipes = nil, nil
+		server.DeclareEngineFacts(facet)
+	}
+	encoded := registration.EncodeRegistrationSpec(spec)
+	n, err := output.Write(encoded)
+	if err == nil && n != len(encoded) {
+		err = io.ErrShortWrite
+	}
+	return err
 }
 
 // stateRoot is the provider state folder --state names; empty selects
@@ -160,38 +241,6 @@ func providerRoot() (string, error) {
 	return setup.DefaultRoot()
 }
 
-// setupInfo is the reply of setup-info --json, version 2: the provider's
-// private root and identity, the package the selection binds, and every
-// package this build can run, in table order.
-type setupInfo struct {
-	Version          int            `json:"version"`
-	ProviderRoot     string         `json:"provider_root"`
-	ProviderID       string         `json:"provider_id"`
-	SelectionPresent bool           `json:"selection_present"`
-	ActivePackage    *activePackage `json:"active_package,omitempty"`
-	KnownPackages    []knownPackage `json:"known_packages"`
-	// StagedModels are the picture models the selection serves, the starter
-	// model first; empty before setup. The provider is the authority for
-	// this list; Setup and the runtime read it here.
-	StagedModels []string `json:"staged_models"`
-	// DownloadDir is where Setup writes model downloads: on the models
-	// folder's volume, so configure and model add publish each by rename.
-	DownloadDir string `json:"download_dir"`
-}
-
-type activePackage struct {
-	Version string `json:"version"`
-	Program string `json:"program"`
-}
-
-type knownPackage struct {
-	Version              string `json:"version"`
-	ArchiveSHA256        string `json:"archive_sha256"`
-	ProgramSHA256        string `json:"program_sha256"`
-	BackendArchiveSHA256 string `json:"backend_archive_sha256"`
-	ModelRevision        string `json:"model_revision"`
-}
-
 // The installed setup bridge is a fixed, bounded JSON contract. It never
 // launches the foreign engine or downloads model bytes. A selection file
 // that does not name a known package makes it fail.
@@ -203,10 +252,10 @@ func writeSetupInfo(out io.Writer) error {
 	if !filepath.IsAbs(root) || len(root) > 4096 {
 		return setup.ErrSelection
 	}
-	info := setupInfo{Version: 2, ProviderRoot: root, ProviderID: setup.ProviderID, KnownPackages: []knownPackage{}, StagedModels: []string{},
+	info := setup.SetupInfoReply{Version: 2, ProviderRoot: root, ProviderID: setup.ProviderID, KnownPackages: []setup.KnownPackageInfo{}, StagedModels: []string{},
 		DownloadDir: setup.DownloadDir(root)}
 	for _, p := range server.Packages {
-		info.KnownPackages = append(info.KnownPackages, knownPackage{p.Version, p.ArchiveSHA256, p.ProgramSHA256, p.BackendArchiveSHA256, p.ModelRevision})
+		info.KnownPackages = append(info.KnownPackages, setup.KnownPackageInfo{Version: p.Version, ArchiveSHA256: p.ArchiveSHA256, ProgramSHA256: p.ProgramSHA256, BackendArchiveSHA256: p.BackendArchiveSHA256, ModelRevision: p.ModelRevision})
 	}
 	selection, err := os.Lstat(setup.SelectionPath(root))
 	if err != nil && !os.IsNotExist(err) {
@@ -218,6 +267,11 @@ func writeSetupInfo(out io.Writer) error {
 		}
 		selected, err := setup.Read(setup.SelectionPath(root))
 		if err != nil {
+			return err
+		}
+		// A folder configured before installed.json existed gets one from its
+		// selection and file sizes; the runtime still hashes every file.
+		if err := setup.WriteMissingInstalled(context.Background(), root); err != nil {
 			return err
 		}
 		// A speech-only selection leaves Setup's picture step to run.
@@ -232,7 +286,7 @@ func writeSetupInfo(out io.Writer) error {
 		if len(program) > 4096 {
 			return setup.ErrSelection
 		}
-		info.SelectionPresent, info.ActivePackage = true, &activePackage{Version: p.Version, Program: program}
+		info.SelectionPresent, info.ActivePackage = true, &setup.ActivePackageInfo{Version: p.Version, Program: program}
 		info.StagedModels = append(info.StagedModels, selected.Models...)
 	}
 	return json.NewEncoder(out).Encode(info)
@@ -265,6 +319,7 @@ func packageCommand(ctx context.Context, root string, args []string, out, usage 
 		io.WriteString(out, packageUsage)
 		return nil
 	}
+	words := setup.SetupCLIWords()
 	flags := flag.NewFlagSet("package "+args[0], flag.ContinueOnError)
 	flags.SetOutput(usage)
 	flags.Usage = func() {
@@ -273,16 +328,16 @@ func packageCommand(ctx context.Context, root string, args []string, out, usage 
 	}
 	var version, packageRoot, sd, llama string
 	var asJSON, replace bool
-	flags.StringVar(&version, "version", "", "the Lemonade version, as Setup's catalog names it")
+	flags.StringVar(&version, words.Version, "", "the Lemonade version, as Setup's catalog names it")
 	switch args[0] {
-	case "check":
-		flags.StringVar(&packageRoot, "root", "", "the version's install folder")
-		flags.BoolVar(&asJSON, "json", false, "print the result as JSON")
-	case "activate":
-		flags.StringVar(&sd, "vulkan-backend-archive", "", "reviewed local sd.cpp Vulkan archive of the version's pairing")
-		flags.StringVar(&llama, "llamacpp-backend-archive", "", "reviewed local llama.cpp archive of the version's pairing")
-		flags.BoolVar(&replace, "replace-backend", false, "replace a backend folder of the version that does not prove")
-	case "retire":
+	case words.Check:
+		flags.StringVar(&packageRoot, words.Root, "", "the version's install folder")
+		flags.BoolVar(&asJSON, words.JSON, false, "print the result as JSON")
+	case words.Activate:
+		flags.StringVar(&sd, words.VulkanBackend, "", "reviewed local sd.cpp Vulkan archive of the version's pairing")
+		flags.StringVar(&llama, "llamacpp-backend-archive", "", "reviewed local llama.cpp publisher archive of the version's pairing, beside "+llamaRuntimeArchive)
+		flags.BoolVar(&replace, words.ReplaceBackend, false, "replace a backend folder of the version that does not prove")
+	case words.Retire:
 	default:
 		//unchecked: usage text; the returned error reports the outcome
 		io.WriteString(usage, packageUsage)
@@ -294,32 +349,23 @@ func packageCommand(ctx context.Context, root string, args []string, out, usage 
 		}
 		return fmt.Errorf("%w: %v", setup.ErrSelection, err)
 	}
-	if version == "" || flags.NArg() != 0 || args[0] == "check" && (packageRoot == "" || !asJSON) {
+	if version == "" || flags.NArg() != 0 || args[0] == words.Check && (packageRoot == "" || !asJSON) {
 		flags.Usage()
 		return setup.ErrSelection
 	}
 	encoder := json.NewEncoder(out)
 	switch args[0] {
-	case "check":
+	case words.Check:
 		p, err := setup.CheckPackage(ctx, version, packageRoot)
 		if err != nil {
 			return err
 		}
-		return encoder.Encode(struct {
-			Version              int    `json:"version"`
-			OK                   bool   `json:"ok"`
-			BackendArchiveSHA256 string `json:"backend_archive_sha256"`
-			ModelRevision        string `json:"model_revision"`
-		}{1, true, p.BackendArchiveSHA256, p.ModelRevision})
-	case "activate":
+		return encoder.Encode(setup.PackageCheckReply{Version: 1, OK: true, BackendArchiveSHA256: p.BackendArchiveSHA256, ModelRevision: p.ModelRevision})
+	case words.Activate:
 		if err := setup.ActivatePackage(ctx, root, version, sd, llama, replace); err != nil {
 			return err
 		}
-		return encoder.Encode(struct {
-			Version       int    `json:"version"`
-			OK            bool   `json:"ok"`
-			ActiveVersion string `json:"active_version"`
-		}{1, true, version})
+		return encoder.Encode(setup.PackageActivationReply{Version: 1, OK: true, ActiveVersion: version})
 	default:
 		if err := setup.RetirePackage(ctx, root, version); err != nil {
 			return err
@@ -355,7 +401,8 @@ func modelCommand(ctx context.Context, root string, args []string, out, usage io
 		io.WriteString(out, modelUsage)
 		return nil
 	}
-	if args[0] != "add" {
+	words := setup.SetupCLIWords()
+	if args[0] != words.Add {
 		//unchecked: usage text; the returned error reports the outcome
 		io.WriteString(usage, modelUsage)
 		return fmt.Errorf("%w: unknown model verb %q", setup.ErrSelection, args[0])
@@ -369,10 +416,10 @@ func modelCommand(ctx context.Context, root string, args []string, out, usage io
 	var id string
 	files := map[string]string{}
 	var fileErr error
-	flags.StringVar(&id, "id", "", "the declared model to add")
-	flags.Func("file", "ROLE=FILE: the verified download of one role", func(value string) error {
+	flags.StringVar(&id, words.ModelID, "", "the declared model to add")
+	flags.Func(words.ModelFile, "ROLE=FILE: the verified download of one role", func(value string) error {
 		role, path, ok := strings.Cut(value, "=")
-		if !ok || role != "main" && role != "text_encoder" && role != "vae" || !filepath.IsAbs(path) || files[role] != "" {
+		if !ok || !slices.Contains(words.ModelRoles[:], role) || !filepath.IsAbs(path) || files[role] != "" {
 			fileErr = fmt.Errorf("%w: --file %q", setup.ErrSelection, value)
 			return fileErr
 		}
@@ -407,9 +454,9 @@ func modelCommand(ctx context.Context, root string, args []string, out, usage io
 func exitCode(err error) int {
 	switch {
 	case errors.Is(err, setup.ErrHeld):
-		return 3
+		return setup.SetupCLIWords().HeldExit
 	case errors.Is(err, setup.ErrPackageRefused):
-		return 2
+		return setup.SetupCLIWords().RefusedExit
 	}
 	return 1
 }
@@ -442,10 +489,12 @@ func writeVerifiedSetup(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(out).Encode(struct {
-		Version  int  `json:"version"`
-		Verified bool `json:"verified"`
-	}{1, verified})
+	if verified {
+		if err := setup.WriteInstalled(root); err != nil {
+			return err
+		}
+	}
+	return json.NewEncoder(out).Encode(setup.VerificationReply{Version: 1, Verified: verified})
 }
 
 func serveInstalled(endpoint string) {
@@ -489,8 +538,16 @@ func checkServeEndpoint(endpoint string) error {
 }
 
 func installedEndpoint(value string) (string, error) {
-	if value == "lemonade-image" || value == listen.Endpoint("lemonade-image") {
-		return listen.Endpoint("lemonade-image"), nil
+	return installedEndpointFor(value, bootstrap.Endpoint)
+}
+
+func installedEndpointFor(value string, endpointFor func(string) (string, error)) (string, error) {
+	selected, err := endpointFor("lemonade-image")
+	if err != nil {
+		return "", err
+	}
+	if value == "lemonade-image" || value == listen.Endpoint("lemonade-image") || value == selected {
+		return selected, nil
 	}
 	const namespaced = `\\.\pipe\openabstractions-provider-`
 	if len(value) == len(namespaced)+32 && strings.HasPrefix(value, namespaced) {
@@ -554,7 +611,8 @@ type configureRequest struct {
 // parseConfigure reads configure's flags; -h writes the usage to out and
 // returns flag.ErrHelp.
 func parseConfigure(args []string, out io.Writer) (configureRequest, error) {
-	flags := flag.NewFlagSet("configure", flag.ContinueOnError)
+	words := setup.SetupCLIWords()
+	flags := flag.NewFlagSet(words.Configure, flag.ContinueOnError)
 	flags.SetOutput(out)
 	flags.Usage = func() {
 		//unchecked: usage text; the parse error reports the outcome
@@ -563,16 +621,16 @@ func parseConfigure(args []string, out io.Writer) (configureRequest, error) {
 	}
 	var r configureRequest
 	var activate bool
-	flags.BoolVar(&activate, "activate-reviewed-package", false, "activate the installed reviewed Lemonade package")
-	flags.BoolVar(&r.engineFilesOnly, "engine-files-only", false, "install only the engine files of an existing install; the private model stays as it is")
-	flags.BoolVar(&r.replace.Backends, "replace-backend", false, "explicitly replace a backend folder that does not match its reviewed archive")
-	flags.BoolVar(&r.replace.Model, "replace-private-model", false, "explicitly replace existing private model configuration")
-	flags.StringVar(&r.main, "bf16-main", "", "approved local BF16 DiT file")
-	flags.StringVar(&r.encoder, "bf16-encoder", "", "approved local text encoder file")
-	flags.StringVar(&r.vae, "bf16-vae", "", "approved local VAE file")
-	flags.StringVar(&r.sd, "vulkan-backend-archive", "", "reviewed local sd.cpp Vulkan archive")
-	flags.StringVar(&r.llama, "llamacpp-backend-archive", "", "reviewed local llama.cpp b10825 Vulkan archive (optional)")
-	flags.StringVar(&r.pkg, "package", "", "installed Lemonade version to select when nothing is selected yet (optional)")
+	flags.BoolVar(&activate, words.Reviewed, false, "activate the installed reviewed Lemonade package")
+	flags.BoolVar(&r.engineFilesOnly, words.EngineFiles, false, "install only the engine files of an existing install; the private model stays as it is")
+	flags.BoolVar(&r.replace.Backends, words.ReplaceBackend, false, "explicitly replace a backend folder that does not match its reviewed archive")
+	flags.BoolVar(&r.replace.Model, words.ReplaceModel, false, "explicitly replace existing private model configuration")
+	flags.StringVar(&r.main, words.Main, "", "approved local BF16 DiT file")
+	flags.StringVar(&r.encoder, words.Encoder, "", "approved local text encoder file")
+	flags.StringVar(&r.vae, words.VAE, "", "approved local VAE file")
+	flags.StringVar(&r.sd, words.VulkanBackend, "", "reviewed local sd.cpp Vulkan archive")
+	flags.StringVar(&r.llama, "llamacpp-backend-archive", "", "reviewed local llama.cpp b10825 Vulkan publisher archive beside "+llamaRuntimeArchive+" (optional)")
+	flags.StringVar(&r.pkg, words.Package, "", "installed Lemonade version to select when nothing is selected yet (optional)")
 	flags.BoolVar(&r.speechOnly, "speech-only", false, "stage only the reviewed speech files into the selected version")
 	flags.StringVar(&r.speech.WhisperArchive, "whisper-backend-archive", "", "reviewed local whisper.cpp v1.8.4 archive of the version's pairing")
 	flags.StringVar(&r.speech.KokoroArchive, "kokoro-backend-archive", "", "reviewed local Kokoros b17 archive (GPL-3.0-or-later)")
@@ -681,27 +739,42 @@ func advanced(args []string) {
 // service at its default endpoint (ABSTRACTION_RESOURCE_ENDPOINT, or the
 // installed runtime's) and its GPU fault handling, whose quarantine is kept
 // in state.
+func captureRuntimeEndpoint(cfg *provider.Config) {
+	cfg.Server.RuntimeEndpoint, _ = bootstrap.DevelopmentEndpoint(cfg.Server.RuntimeEndpoint)
+}
+
 func serve(cfg provider.Config, state string) {
+	if err := serveProvider(cfg, state); err != nil {
+		fail(err)
+	}
+}
+
+func serveProvider(cfg provider.Config, state string) error {
+	captureRuntimeEndpoint(&cfg)
 	report := func(err error) { fmt.Fprintln(os.Stderr, "lemonaded:", err) }
 	cfg.OnError = report
 	cfg.Leases = resource.Discover()
-	gpu, err := newGPUGuard(state, os.Stderr, report)
+	handler, closeDiagnostics := resolvedDiagnostics("lemonaded")
+	defer closeDiagnostics()
+	gpu, err := newGPUGuard(state, os.Stderr, report, slog.New(handler))
 	if err != nil {
-		fail(err)
+		return err
 	}
 	cfg.GPU = gpu
 	instance, err := provider.New(cfg)
 	if err != nil {
-		fail(err)
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go gpu.Run(ctx)
+	gpuDone := make(chan struct{})
+	go func() { defer close(gpuDone); gpu.Run(ctx) }()
+	defer func() { stop(); <-gpuDone; gpu.Flush() }()
 	err = instance.Serve(ctx)
-	gpu.Flush()
 	if err != nil && ctx.Err() == nil {
-		fail(err)
+		return err
 	}
+	return nil
 }
 
 func fail(err error) {

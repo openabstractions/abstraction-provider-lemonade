@@ -36,7 +36,8 @@ func TestLiveApprovedBinary(t *testing.T) {
 	}
 	state := t.TempDir()
 	s, err := New(Config{
-		Program: program, CacheDir: filepath.Join(state, "cache"), ConfigDir: filepath.Join(state, "config"),
+		RuntimeEndpoint: os.Getenv("OA_LEMONADE_TEST_RUNTIME_ENDPOINT"),
+		Program:         program, CacheDir: filepath.Join(state, "cache"), ConfigDir: filepath.Join(state, "config"),
 		Port: freePort(t), Models: []string{"Flux-2-Klein-4B"}, Ready: 45 * time.Second,
 	})
 	if err != nil {

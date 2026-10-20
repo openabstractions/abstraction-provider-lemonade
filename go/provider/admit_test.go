@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	inference "github.com/openabstractions/abstraction-inference/go"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/whispercpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/whispercpp"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 	router "github.com/openabstractions/abstraction-router/go"
 )
@@ -86,5 +86,24 @@ func TestAdmitRefusesAModelOfAnotherProfile(t *testing.T) {
 	routes.Survey()
 	if d, _ := routes.Route(router.Request{Model: kokoro.KokoroV1, Profile: router.ProfileImage}); d.Verdict != router.NoHost {
 		t.Fatalf("image kokoro-v1 routed %s (%s)", d.Verdict, d.Why)
+	}
+}
+
+func TestAdmitRefusesUnstagedDeclaredImageBeforeEngineStart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := server.New(server.Config{Program: os.Args[0], CacheDir: filepath.Join(dir, "cache"),
+		ConfigDir: filepath.Join(dir, "config"), Port: 41234, Models: []string{"user.Z-Image-Turbo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _ := servedHost("lemonade-image", s)
+	starts := 0
+	admit := admitter(s, host, func(context.Context) error { starts++; return nil }, nil)
+	ctx := inference.WithAdmissionProfile(context.Background(), router.ProfileImage)
+	if reason, ok := admit(ctx, host, "user.Z-Image-Turbo"); ok || reason != "engine:image:model-files" {
+		t.Fatalf("unstaged admission: %s %v", reason, ok)
+	}
+	if starts != 0 {
+		t.Fatalf("unstaged model started engine %d times", starts)
 	}
 }

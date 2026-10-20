@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
+	"github.com/openabstractions/abstraction-storage/go/digest"
 
 	identity "github.com/openabstractions/abstraction-identity"
 )
@@ -50,10 +51,10 @@ func (m PackageManifest) has(name string) bool {
 }
 
 // files is the manifest in the shared engine-file kit's form.
-func (m PackageManifest) files() enginefiles.Manifest {
-	out := enginefiles.Manifest{Files: make([]enginefiles.File, len(m.Files))}
+func (m PackageManifest) files() programfiles.Manifest {
+	out := programfiles.Manifest{Files: make([]programfiles.File, len(m.Files))}
 	for i, f := range m.Files {
-		out.Files[i] = enginefiles.File{Path: f.Name, Size: f.Size, SHA256: f.SHA256}
+		out.Files[i] = programfiles.File{Path: f.Name, Size: f.Size, SHA256: f.SHA256}
 	}
 	return out
 }
@@ -62,11 +63,11 @@ func (m PackageManifest) files() enginefiles.Manifest {
 // (INF-F1..INF-F4). lemond reads its resources folder at run time (backend
 // versions, config defaults, the model registry), so those files are proven
 // and held with the executable.
-func (m PackageManifest) tree(root, stateDir string) (enginefiles.Tree, error) {
+func (m PackageManifest) tree(root, stateDir string) (programfiles.Tree, error) {
 	if !m.valid() {
-		return enginefiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrPackageManifest)
+		return programfiles.Tree{}, fmt.Errorf("%w: invalid manifest", ErrPackageManifest)
 	}
-	return enginefiles.Tree{Name: m.Name, Root: root, Manifest: m.files(), Record: filepath.Join(stateDir, "package.files")}, nil
+	return programfiles.Tree{Name: m.Name, Root: root, Manifest: m.files(), Record: filepath.Join(stateDir, "package.files")}, nil
 }
 
 // VerifyPackageDir hashes every file under root against m and refuses any
@@ -76,7 +77,7 @@ func VerifyPackageDir(root string, m PackageManifest) error {
 	if !m.valid() {
 		return fmt.Errorf("%w: invalid manifest", ErrPackageManifest)
 	}
-	if err := enginefiles.Verify(context.Background(), m.Name, root, m.files()); err != nil {
+	if err := programfiles.Verify(context.Background(), m.Name, root, m.files()); err != nil {
 		return fmt.Errorf("%w: %w", ErrPackageManifest, err)
 	}
 	return nil
@@ -218,15 +219,7 @@ func validVersion(v string) bool {
 }
 
 func hex64(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
+	return digest.Valid(digest.Prefix + s)
 }
 
 // Lemonade2026391 is the extracted Embeddable Lemonade 2026.39.1 for Windows

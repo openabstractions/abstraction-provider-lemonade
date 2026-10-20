@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	supervision "github.com/openabstractions/abstraction-facade/go/supervision"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/whispercpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/whispercpp"
 	router "github.com/openabstractions/abstraction-router/go"
 )
 
@@ -141,17 +141,17 @@ func (m SpeechModel) RefsMain() []byte { return []byte(m.Revision) }
 
 // Tree is the model folder as the shared engine-file kit proves it: refs/main
 // and the snapshot's pinned files, and nothing else.
-func (m SpeechModel) Tree(modelsDir, stateDir string) (enginefiles.Tree, error) {
+func (m SpeechModel) Tree(modelsDir, stateDir string) (programfiles.Tree, error) {
 	if !m.valid() {
-		return enginefiles.Tree{}, fmt.Errorf("%w: invalid model pin %s", ErrWeightFormat, m.Name)
+		return programfiles.Tree{}, fmt.Errorf("%w: invalid model pin %s", ErrWeightFormat, m.Name)
 	}
 	ref := m.RefsMain()
 	sum := sha256.Sum256(ref)
-	files := []enginefiles.File{{Path: "refs/main", Size: int64(len(ref)), SHA256: hex.EncodeToString(sum[:])}}
+	files := []programfiles.File{{Path: "refs/main", Size: int64(len(ref)), SHA256: hex.EncodeToString(sum[:])}}
 	for _, f := range m.Files {
-		files = append(files, enginefiles.File{Path: path.Join("snapshots", m.Revision, f.Name), Size: f.Size, SHA256: f.SHA256})
+		files = append(files, programfiles.File{Path: path.Join("snapshots", m.Revision, f.Name), Size: f.Size, SHA256: f.SHA256})
 	}
-	return enginefiles.Tree{Name: m.Folder, Root: m.Dir(modelsDir), Manifest: enginefiles.Manifest{Files: files},
+	return programfiles.Tree{Name: m.Folder, Root: m.Dir(modelsDir), Manifest: programfiles.Manifest{Files: files},
 		Record: filepath.Join(stateDir, "model-"+m.Folder+".files")}, nil
 }
 
@@ -160,7 +160,7 @@ func (m SpeechModel) Tree(modelsDir, stateDir string) (enginefiles.Tree, error) 
 // held names which of them the launch proves and holds.
 type speechTree struct {
 	what string // whisper-backend, kokoro-backend, whisper-model, kokoro-model
-	tree enginefiles.Tree
+	tree programfiles.Tree
 }
 
 // speechModelTrees returns the trees of the speech models whose folders
@@ -309,7 +309,7 @@ func (s *Server) audioReadyLocked(route string) error {
 	if err := checkBackendArgs(lockedConfigFor(s.launched.ModelsDir, s.launched.WhisperBackend.Variant)); err != nil {
 		return audioRefusal("arguments", err, "%v", err)
 	}
-	if err := validateEnvironment(s.launchEnv); err != nil {
+	if err := validateEnvironment(s.launchEnv, s.launched.RuntimeEndpoint); err != nil {
 		return audioRefusal("environment", err, "%v", err)
 	}
 	if route == SpeechRoute && time.Now().Before(s.speechRetry) {

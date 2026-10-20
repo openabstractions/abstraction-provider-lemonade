@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -67,7 +67,13 @@ func StageSpeech(ctx context.Context, root string, files SpeechFiles, replace bo
 	if !filepath.IsAbs(root) {
 		return ErrSelection
 	}
-	return withSetupLock(ctx, root, func() error { return stageSpeech(ctx, root, files, replace, backendFiles, reviewedSteps) })
+	return withSetupLock(ctx, root, func() error {
+		if err := stageSpeech(ctx, root, files, replace, backendFiles, reviewedSteps); err != nil {
+			return err
+		}
+		// A speech model staged beside an existing selection saves none.
+		return WriteInstalled(root)
+	})
 }
 
 // stageSpeech stages files into the selected version. On a state folder
@@ -75,7 +81,7 @@ func StageSpeech(ctx context.Context, root string, files SpeechFiles, replace bo
 // and prove (speech runs inside Lemonade; the picture model and the image
 // backend are not needed), stages the files, installs the package and
 // backend folders' engine files and saves a speech-only selection last.
-func stageSpeech(ctx context.Context, root string, files SpeechFiles, replace bool, v *enginefiles.Verifier, steps engineSteps) error {
+func stageSpeech(ctx context.Context, root string, files SpeechFiles, replace bool, v *programfiles.Verifier, steps engineSteps) error {
 	selected, err := readSelection(ctx, SelectionPath(root))
 	fresh := errors.Is(err, os.ErrNotExist)
 	if err != nil && !fresh {
@@ -161,7 +167,7 @@ func packageRequired(p server.Package, cause error) error {
 // each back to its source. It adds
 // refs/main and replaces the folder with the stage, then installs the tree:
 // hashed in full, read-only folders, a record under stateDir.
-func stageSpeechModel(ctx context.Context, v *enginefiles.Verifier, root, stateDir string, m server.SpeechModel, pins []weightPin, replace bool) error {
+func stageSpeechModel(ctx context.Context, v *programfiles.Verifier, root, stateDir string, m server.SpeechModel, pins []weightPin, replace bool) error {
 	modelsDir := modelsDirFor(root)
 	tree, err := m.Tree(modelsDir, stateDir)
 	if err != nil {
@@ -173,7 +179,7 @@ func stageSpeechModel(ctx context.Context, v *enginefiles.Verifier, root, stateD
 		} else if !replace {
 			return fmt.Errorf("%w: the %s model folder does not prove; replace it with --replace-backend: %w", ErrSelection, m.Name, err)
 		}
-		if err := enginefiles.Unlock(tree.Root); err != nil {
+		if err := programfiles.Unlock(tree.Root); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(tree.Root); err != nil {
@@ -212,12 +218,14 @@ func stageSpeechModel(ctx context.Context, v *enginefiles.Verifier, root, stateD
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Rename(stage, tree.Root); err != nil {
+	if err := retryPublicationRename(ctx, func() error {
+		return os.Rename(stage, tree.Root)
+	}); err != nil {
 		return err
 	}
 	if err := v.Install(ctx, tree); err != nil {
 		//unchecked: the refused tree is this stage's own; removal is best effort before the refusal is reported
-		_ = enginefiles.Unlock(tree.Root)
+		_ = programfiles.Unlock(tree.Root)
 		for _, pin := range pins {
 			//unchecked: as placements.restore, a download that cannot move back is downloaded again
 			_ = os.Rename(filepath.Join(tree.Root, "snapshots", m.Revision, pin.rel), pin.source)

@@ -14,7 +14,7 @@ import (
 )
 
 func TestStageBF16VerifiesBeforePrivatePublication(t *testing.T) {
-	root, err := os.MkdirTemp("", "oa-klein-")
+	root, err := modelFixtureRoot(t, "oa-klein-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestStageBF16VerifiesBeforePrivatePublication(t *testing.T) {
 // --replace-private-model. A staged model that does not verify still needs
 // replacement intent.
 func TestStageBF16KeepsAVerifiedStagedModelWithoutCopying(t *testing.T) {
-	root, err := os.MkdirTemp("", "oa-klein-")
+	root, err := modelFixtureRoot(t, "oa-klein-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestPrivateConfigIsTheServerLock(t *testing.T) {
 }
 
 func TestStageBF16CancellationLeavesNoPublishedModel(t *testing.T) {
-	root, err := os.MkdirTemp("", "oa-klein-cancel-")
+	root, err := modelFixtureRoot(t, "oa-klein-cancel-")
 	if err != nil {
 		t.Fatal(err)
 	}

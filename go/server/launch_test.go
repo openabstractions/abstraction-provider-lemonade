@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +15,42 @@ import (
 	"testing"
 )
 
+func TestTransportDiagnosticsDistinguishLaunchedFrontEndAndBackendPlan(t *testing.T) {
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&log, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	cfg := Config{ProgramSHA256: strings.Repeat("a", 64), SDBackend: SDCppVulkan, WhisperBackend: WhisperCppVulkan, KokoroBackend: KokorosB17}
+	logTransport(cfg)
+	if strings.Contains(log.String(), "whisper-server") || strings.Contains(log.String(), "Kokoros") {
+		t.Fatal("inactive audio plan claimed", log.String())
+	}
+	log.Reset()
+	cfg.Transcription, cfg.Speech = true, true
+	logTransport(cfg)
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(log.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+		if entry["level"] != "INFO" || entry["transport"] != "tcp-loopback" || entry["reason"] != "IPC not implemented in this adopter" || entry["pin"] == "unqualified" {
+			t.Fatal(entry)
+		}
+		if entry["engine"] == "lemond" {
+			if entry["scope"] != "launched" {
+				t.Fatal(entry)
+			}
+		} else if entry["scope"] != "adopter-plan" {
+			t.Fatal(entry)
+		}
+	}
+	if len(entries) != 4 {
+		t.Fatal(entries)
+	}
+}
+
 // windowsLaunch skips a test of the launch plan or its environment, which
 // is built from the Windows system folder: the reviewed Lemonade package is
 // Windows x64 only (packaging/windows-amd64.json, system_other.go).
@@ -20,6 +58,62 @@ func windowsLaunch(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
 		t.Skip("the reviewed Lemonade package and its launch plan are Windows only")
+	}
+}
+
+func TestSelectedRuntimeEnvironment(t *testing.T) {
+	windowsLaunch(t)
+	t.Setenv("ABSTRACTION_RUNTIME_ENDPOINT", "stale-ambient")
+	keys := launchKeys{api: "api", admin: "admin"}
+	for _, selected := range []string{"", `\\.\pipe\private-runtime`} {
+		env, e := childEnvironment(`C:\Windows`, t.TempDir(), keys, selected)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = validateEnvironment(env, selected); e != nil {
+			t.Fatal(e)
+		}
+		for _, item := range env {
+			if strings.Contains(item, "stale-ambient") {
+				t.Fatal("ambient routing inherited")
+			}
+		}
+		if selected == "" {
+			if e = validateEnvironment(append(slices.Clone(env), "ABSTRACTION_RUNTIME_ENDPOINT=other"), selected); e == nil {
+				t.Fatal("unconfigured route admitted")
+			}
+			continue
+		}
+		for _, bad := range []string{"ABSTRACTION_RUNTIME_ENDPOINT=other", "abstraction_runtime_endpoint=" + selected, "ABSTRACTION_LOG_SERVICE=other"} {
+			if e = validateEnvironment(append(slices.Clone(env), bad), selected); e == nil {
+				t.Fatal("extra routing admitted", bad)
+			}
+		}
+		without := slices.DeleteFunc(slices.Clone(env), func(s string) bool { return strings.HasPrefix(s, "ABSTRACTION_RUNTIME_ENDPOINT=") })
+		if e = validateEnvironment(without, selected); e == nil {
+			t.Fatal("missing route admitted")
+		}
+		wrong := append(without, "ABSTRACTION_RUNTIME_ENDPOINT=other")
+		if e = validateEnvironment(wrong, selected); e == nil {
+			t.Fatal("wrong route admitted")
+		}
+		cfg := planConfig(t)
+		cfg.RuntimeEndpoint = selected
+		replacement, e := (Binding{Program: cfg.Program, CacheDir: cfg.CacheDir, ConfigDir: cfg.ConfigDir, StateDir: t.TempDir()}).apply(cfg)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if replacement.RuntimeEndpoint != selected {
+			t.Fatal("binding discarded route")
+		}
+		running := &Server{cfg: Config{chatBackend: LlamaCppVulkanB10825, ModelsDir: t.TempDir(), RuntimeEndpoint: "later-config"}, launched: Config{LlamaBackend: LlamaCppVulkanB10825, RuntimeEndpoint: selected}, llamaHeld: true, launchEnv: env}
+		if e = running.chatReadyLocked(); e != nil {
+			t.Fatal(e)
+		}
+		running.launchEnv = wrong
+		if e = running.chatReadyLocked(); e == nil {
+			t.Fatal("chat accepted mismatched launched route")
+		}
 	}
 }
 
@@ -72,7 +166,7 @@ func TestChildEnvironmentIsBuiltFromNothing(t *testing.T) {
 		t.Fatalf("child environment names %q differ from the allow-list", names)
 	}
 	for _, bad := range []string{"HF_TOKEN=x", "LEMONADE_SDCPP_VULKAN_BIN=x", "LLAMA_ARG_HOST=0.0.0.0", "HTTPS_PROXY=x", "OPENAI_API_KEY=x"} {
-		if err := validateEnvironment(append(slices.Clone(want), bad)); !errors.Is(err, ErrForbiddenEnvironment) {
+		if err := validateEnvironment(append(slices.Clone(want), bad), ""); !errors.Is(err, ErrForbiddenEnvironment) {
 			t.Fatalf("%s accepted: %v", bad, err)
 		}
 	}
@@ -89,11 +183,11 @@ func TestForbiddenEngineEnvironmentRefusedWhateverTheAllowList(t *testing.T) {
 	windowsLaunch(t)
 	temp := filepath.Join(t.TempDir(), "engine-temp")
 	keys := launchKeys{api: strings.Repeat("a", 64), admin: strings.Repeat("b", 64)}
-	base, err := childEnvironment(`C:\Windows`, temp, keys)
+	base, err := childEnvironment(`C:\Windows`, temp, keys, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateEnvironment(base); err != nil {
+	if err := validateEnvironment(base, ""); err != nil {
 		t.Fatalf("reviewed environment refused: %v", err)
 	}
 	for _, name := range []string{
@@ -102,7 +196,7 @@ func TestForbiddenEngineEnvironmentRefusedWhateverTheAllowList(t *testing.T) {
 	} {
 		upper := strings.ToUpper(name)
 		childEnvironmentNames[upper] = true
-		err := validateEnvironment(append(slices.Clone(base), name+"=x"))
+		err := validateEnvironment(append(slices.Clone(base), name+"=x"), "")
 		delete(childEnvironmentNames, upper)
 		if !errors.Is(err, ErrForbiddenEnvironment) {
 			t.Fatalf("%s accepted once allow-listed: %v", name, err)

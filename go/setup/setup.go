@@ -17,10 +17,11 @@ import (
 	"time"
 
 	cas "github.com/openabstractions/abstraction-cas/go"
-	"github.com/openabstractions/abstraction-identity/listen"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/provider"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
+	"github.com/openabstractions/abstraction-storage/go/layout"
 )
 
 const SelectionVersion = 1
@@ -117,7 +118,7 @@ func verifyProgram(path, expected string) error {
 
 // verifyPackageAt hashes p's program and every file of the package folder
 // that holds it against p's manifest; it changes no ACL and writes no record.
-// A file the kit could not open or read (enginefiles.ErrUnreadable), such as
+// A file the kit could not open or read (programfiles.ErrUnreadable), such as
 // one an antivirus scan holds, returns that error with its system cause for
 // another attempt; every other refusal of the folder is definitive
 // (ErrPackageRefused).
@@ -126,7 +127,7 @@ func verifyPackageAt(p server.Package, program string) error {
 		return err
 	}
 	if err := server.VerifyPackageDir(filepath.Dir(program), p.Manifest); err != nil {
-		if errors.Is(err, enginefiles.ErrUnreadable) {
+		if errors.Is(err, programfiles.ErrUnreadable) {
 			return fmt.Errorf("%w: %w", ErrSelection, err)
 		}
 		return fmt.Errorf("%w: %w: %w", ErrSelection, ErrPackageRefused, err)
@@ -150,11 +151,11 @@ func VerifyPackage(p server.Package) (string, error) {
 // DefaultRoot is per-user state. It is separate from Lemonade's normal
 // installation and profile, so the provider cannot change an owner's server.
 func DefaultRoot() (string, error) {
-	cache, err := os.UserCacheDir()
+	providers, err := layout.DefaultProviderStateRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cache, "OpenAbstractions", "providers", "lemonade"), nil
+	return filepath.Join(providers, "lemonade"), nil
 }
 
 func SelectionPath(root string) string { return filepath.Join(root, "selection.json") }
@@ -274,7 +275,11 @@ func Save(path string, selected Selection) error {
 		return err
 	}
 	data = append(data, '\n')
-	return cas.ChangeLimit(path, 4096, func([]byte) ([]byte, error) { return data, nil })
+	if err := cas.ChangeLimit(path, 4096, func([]byte) ([]byte, error) { return data, nil }); err != nil {
+		return err
+	}
+	// The runtime lists what installed.json names; it follows each selection.
+	return WriteInstalled(filepath.Dir(path))
 }
 
 // bindingFor names p's program, manifests and per-version folders under
@@ -296,16 +301,17 @@ func bindingFor(root string, p server.Package, program string) server.Binding {
 // the version Setup activates runs from the next launch on.
 func Resolve(selected Selection, providerProgram, root string) (provider.Config, error) {
 	return resolve(selected, providerProgram, root, resolveSteps{
-		program: PackageProgramFor, verifyPackage: VerifyPackage, verifyBackend: verifyApprovedBackend,
+		program: PackageProgramFor, verifyPackage: VerifyPackage, verifyBackend: verifyApprovedBackend, endpoint: bootstrap.Endpoint,
 	})
 }
 
-// resolveSteps are the installed-package lookups Resolve makes; tests
+// resolveSteps are the installed-package and endpoint lookups Resolve makes; tests
 // replace them.
 type resolveSteps struct {
 	program       func(server.Package) (string, error)
 	verifyPackage func(server.Package) (string, error)
 	verifyBackend func(cacheDir string, p server.Package) error
+	endpoint      func(string) (string, error)
 }
 
 func resolve(selected Selection, providerProgram, root string, steps resolveSteps) (provider.Config, error) {
@@ -353,7 +359,10 @@ func resolve(selected Selection, providerProgram, root string, steps resolveStep
 	if err != nil {
 		return provider.Config{}, err
 	}
-	endpoint := listen.Endpoint("lemonade-" + key)
+	endpoint, err := steps.endpoint("lemonade-" + key)
+	if err != nil {
+		return provider.Config{}, err
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return provider.Config{}, fmt.Errorf("%w: private port: %v", ErrSelection, err)

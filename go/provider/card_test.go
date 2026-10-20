@@ -61,6 +61,10 @@ func (f *fakeLeases) Renew(string) (res.LeaseChange, error) {
 	return res.LeaseChange{Applied: !f.refuse}, nil
 }
 
+func (*fakeLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (f *fakeLeases) Release(lease string) (res.LeaseChange, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

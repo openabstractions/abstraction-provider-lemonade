@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -331,11 +332,15 @@ func stageBF16(ctx context.Context, root string, p server.Package, pins []weight
 			} else if !os.IsNotExist(err) {
 				return err
 			}
-			if err := os.Rename(snapshot, backup); err != nil {
+			if err := retryPublicationRename(ctx, func() error {
+				return os.Rename(snapshot, backup)
+			}); err != nil {
 				return err
 			}
 		}
-		if err := os.Rename(stage, snapshot); err != nil {
+		if err := retryPublicationRename(ctx, func() error {
+			return os.Rename(stage, snapshot)
+		}); err != nil {
 			if old {
 				_ = os.Rename(backup, snapshot)
 			}
@@ -455,6 +460,33 @@ func registryBytes(models []string) ([]byte, error) {
 		entries[m.RegistryName()] = m.RegistryEntry()
 	}
 	return json.Marshal(entries)
+}
+
+// pinnedModelInventory describes the selected picture models and declared
+// speech models in their receipt order. The receipt writer checks presence.
+func pinnedModelInventory(pictures []string) []InstalledModel {
+	models := []InstalledModel{}
+	for _, id := range pictures {
+		m, ok := server.FindImageModel(id)
+		if !ok || len(m.Files) == 0 {
+			continue
+		}
+		entry := InstalledModel{Model: m.ID}
+		for _, file := range m.Files {
+			rel := path.Join("engine-models", filepath.ToSlash(file.CachePath()))
+			entry.Files = append(entry.Files, InstalledFile{Path: rel, Size: file.Bytes, SHA256: file.SHA256})
+		}
+		models = append(models, entry)
+	}
+	for _, m := range []server.SpeechModel{server.WhisperLargeV3TurboModel, server.KokoroV1Model} {
+		entry := InstalledModel{Model: m.Name}
+		for i, rel := range m.Paths() {
+			file := m.Files[i]
+			entry.Files = append(entry.Files, InstalledFile{Path: path.Join("engine-models", rel), Size: file.Size, SHA256: file.SHA256})
+		}
+		models = append(models, entry)
+	}
+	return models
 }
 
 // legacyConfigBytes is the config.json setup wrote before the lock. It left
@@ -611,6 +643,10 @@ func transfer(ctx context.Context, dest io.Writer, source io.Reader, progress fu
 }
 
 func writeAtomic(path string, data []byte) error {
+	return writeAtomicWithRetry(path, data, nil)
+}
+
+func writeAtomicWithRetry(path string, data []byte, retry func(func() error) error) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".write-")
 	if err != nil {
 		return err
@@ -627,5 +663,9 @@ func writeAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	publish := func() error { return os.Rename(tmp.Name(), path) }
+	if retry != nil {
+		return retry(publish)
+	}
+	return publish()
 }

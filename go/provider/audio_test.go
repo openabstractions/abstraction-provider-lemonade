@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	wire "github.com/openabstractions/abstraction-inference/go/abstraction/inference/api"
-	"github.com/openabstractions/abstraction-inference/go/providerhost/kokoro"
+	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
 )
 
 // fakeServer stands for the owned Lemonade: its address and the speech crash

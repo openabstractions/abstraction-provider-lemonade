@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 )
 
 // package retire is refused while a launch holds the version's files, as a
@@ -22,7 +22,7 @@ func TestPackageRetireIsRefusedWhileALaunchHoldsTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hold, err := enginefiles.NewVerifier(enginefiles.Options{ACL: openFolders{}}).Launch(ctx, tree)
+	hold, err := programfiles.NewVerifier(programfiles.Options{ACL: openFolders{}}).Launch(ctx, tree)
 	if err != nil {
 		t.Fatal(err)
 	}

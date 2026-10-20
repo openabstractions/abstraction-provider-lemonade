@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -39,19 +39,19 @@ func TestUnlockEngineFilesMakesEveryVersionsPackageAndBackendsRemovable(t *testi
 			t.Fatal(err)
 		}
 	}
-	sid, err := enginefiles.AccountSID()
+	sid, err := programfiles.AccountSID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, folder := range locked {
-		if err := enginefiles.SetFolderACL(folder, sid, enginefiles.ReadOnly); err != nil {
+		if err := programfiles.SetFolderACL(folder, sid, programfiles.ReadOnly); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
 		for _, folder := range locked {
 			//unchecked: cleanup of a folder the test may already have removed
-			_ = enginefiles.UnlockWithin(folder)
+			_ = programfiles.UnlockWithin(folder)
 		}
 	})
 	if _, err := UnlockEngineFiles(context.Background(), root); err != nil {

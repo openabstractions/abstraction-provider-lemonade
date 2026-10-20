@@ -15,6 +15,8 @@ Binds: [inference.thrift](https://github.com/openabstractions/abstraction-infere
 
 ## Reading this page
 
+The conventions every OA contract carries are stated once in [CONVENTIONS.md](https://github.com/openabstractions/abstractions/blob/main/idl/CONVENTIONS.md); a rule here that applies one cites its `CONV-` id.
+
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
 "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
 document are to be interpreted as described in BCP 14 [RFC2119] [RFC8174]
@@ -55,7 +57,9 @@ before Lemonade starts (inference CONTRACT.md INF-A5).
 **[LEMONADE-A2] Admission starts the engine in order.** The admission hook
 MUST check, in this order: the model (LEMONADE-A1); for an audio model, that
 its files are staged (`engine:audio:engine-files`,
-`engine:audio:model-files`); the backend folders (LEMONADE-P2); then it
+`engine:audio:model-files`); for a reviewed image model, that every pinned
+role file is staged at its expected size (`engine:image:model-files`);
+the backend folders (LEMONADE-P2); then it
 starts or reuses the Lemonade tree (LEMONADE-L1); then, for an audio model,
 that its route is open for this launch (LEMONADE-S1). The first failure is
 the refusal, `unavailable` with its reason word (LEMONADE-E1); the full
@@ -112,7 +116,12 @@ inside the same tree.
 **[LEMONADE-L2] The environment is built from nothing.** The tree MUST
 start with `SystemRoot`, `windir`, `SystemDrive`, `PATH` of the Windows
 system folders, `TEMP` and `TMP` at `engine-temp`, and two random 256-bit
-keys per launch as `LEMONADE_API_KEY` and `LEMONADE_ADMIN_API_KEY`. The
+keys per launch as `LEMONADE_API_KEY` and `LEMONADE_ADMIN_API_KEY`. Trusted
+provider bootstrap MAY add the single exact selected OA resolver as
+`ABSTRACTION_RUNTIME_ENDPOINT`. Empty installed selection omits it. Launch and
+chat/audio saved-environment validation MUST require that exact configured
+value and refuse missing, mismatched or duplicate routing. Runtime endpoint selection
+retains native runtime program/account authentication. The
 forbidden names (`GGML_*`, `MTMD_*`, `LLAMA_*`, `HF_*`, other `LEMONADE_*`,
 `WHISPER_*`, `OVERRIDE_VITISAI_*`, `KMP_*`, `PIPER_*`, `ESPEAK*`, `ORT_*`,
 `SSL_CERT_*` and every proxy name) are refused even if the allowlist names
@@ -205,7 +214,7 @@ model has work in the provider.
 ## Holding the card
 
 The installed declaration names `card:0`. The provider uses abstraction-resource's
-`holder` for a process-bound card lease and its `gpufault` Guard for driver
+`holder` for a process-bound card [lease](https://openabstractions.github.io/reference.html#concept-resource.lease) and its `gpufault` Guard for driver
 resets and quarantine (resource CONTRACT.md RES-L1..RES-L4, RES-G1..RES-G7).
 Launch order is backend proof, lease acquisition for the pinned admission
 estimate, then engine start and readiness. The holder renews the lease every
@@ -264,3 +273,11 @@ exposure"). The provider's keys protect Lemonade's routes alone. The
 declaration's name says image although the provider also serves
 transcription and speech; renaming it is TODO D7. Modelhost and this
 provider each pin the same sd-server and llama-server builds (TODO D7).
+
+The card lease asks for `server.AdmissionEstimate`, about 16.8 GiB of
+pinned file sizes, which is below FLUX.2 [klein]'s measured need with
+sd.cpp's compute buffers at 1024×1024 (TODO D1a). An image request running
+at a GPU reset is not quarantined (TODO D1b). A bound lease credits only
+the bound process, so the resource service counts this provider's lease
+twice while its engines run; the fix is the resource service's (TODO, "A
+bound lease credits only the bound process").

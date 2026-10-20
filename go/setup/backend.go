@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/enginefiles"
+	"github.com/openabstractions/abstraction-facade/go/programfiles"
 	"github.com/openabstractions/abstraction-provider-lemonade/go/server"
 )
 
@@ -64,11 +64,12 @@ type backendArchive struct {
 	size     int64
 	sha256   string
 	prefix   string
+	runtime  *backendRuntime
 }
 
 var (
 	vulkanArchive        = backendArchive{manifest: server.SDCppVulkan, size: VulkanBackendArchiveBytes, sha256: VulkanBackendArchiveSHA256}
-	llamaArchive         = backendArchive{manifest: server.LlamaCppVulkanB10825, size: LlamaBackendArchiveBytes, sha256: LlamaBackendArchiveSHA256}
+	llamaArchive         = backendArchive{manifest: server.LlamaCppVulkanB10825, size: LlamaBackendArchiveBytes, sha256: LlamaBackendArchiveSHA256, runtime: &llamaRuntimeInput}
 	whisperVulkanArchive = backendArchive{manifest: server.WhisperCppVulkan, size: WhisperVulkanBackendArchiveBytes, sha256: WhisperVulkanBackendArchiveSHA256}
 	whisperCPUArchive    = backendArchive{manifest: server.WhisperCppCPU, size: WhisperCPUBackendArchiveBytes, sha256: WhisperCPUBackendArchiveSHA256}
 	kokoroArchive        = backendArchive{manifest: server.KokorosB17, size: KokoroBackendArchiveBytes, sha256: KokoroBackendArchiveSHA256, prefix: "windows-x86_64/"}
@@ -237,6 +238,8 @@ func stageApprovedVulkanBackend(ctx context.Context, cacheDir, archivePath strin
 // (llamacpp_server.cpp). Only the files review condition 5 keeps are
 // written; ggml-rpc-server.exe, ggml-rpc.dll and the command-line tools stay
 // in the archive. The image backend must already be staged.
+// Until the installed folder proves, the caller supplies the pinned runtime
+// release-input ZIP beside archivePath, under its fixed asset name.
 func StageApprovedLlamaBackend(ctx context.Context, cacheDir, archivePath string, progress func(done, total int64) error, replace bool) error {
 	root, _ := cacheLayout(cacheDir)
 	return withSetupLock(ctx, root, func() error {
@@ -272,7 +275,7 @@ func stageBackends(ctx context.Context, cacheDir string, archives []stagedArchiv
 
 // backendFiles installs staged backend trees for this process. Tests give it
 // a folder ACL that leaves their temporary folders removable.
-var backendFiles = enginefiles.NewVerifier(enginefiles.Options{})
+var backendFiles = programfiles.NewVerifier(programfiles.Options{})
 
 // stageBackend stages a into Lemonade's `<cache>/bin/<family>/<variant>`
 // through the provider kit's archive install (inference CONTRACT.md INF-F6):
@@ -311,6 +314,21 @@ func stageBackend(ctx context.Context, a backendArchive, cacheDir, archivePath s
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSelection, err)
 	}
+	extra := map[string][]byte{"version.txt": a.manifest.VersionFile()}
+	if a.runtime != nil {
+		// A verified installed tree keeps working after its input cache is
+		// retired. Its held manifest includes the same three runtime DLLs.
+		if err := backendFiles.Check(ctx, tree); err == nil {
+			return nil
+		}
+		runtime, err := a.runtime.read(ctx, archivePath)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrSelection, err)
+		}
+		for name, data := range runtime {
+			extra[name] = data
+		}
+	}
 	parent := filepath.Dir(tree.Root)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return err
@@ -320,12 +338,12 @@ func stageBackend(ctx context.Context, a backendArchive, cacheDir, archivePath s
 		return err
 	}
 	defer os.RemoveAll(stage)
-	_, err = backendFiles.InstallFromArchive(ctx, enginefiles.ArchiveInstall{
-		Archive:  enginefiles.PinnedArchive{Path: archivePath, Size: a.size, SHA256: a.sha256},
+	_, err = backendFiles.InstallFromArchive(ctx, programfiles.ArchiveInstall{
+		Archive:  programfiles.PinnedArchive{Path: archivePath, Size: a.size, SHA256: a.sha256},
 		Tree:     tree,
 		Prefix:   a.prefix,
 		Excluded: a.manifest.Excluded,
-		Extra:    map[string][]byte{"version.txt": a.manifest.VersionFile()},
+		Extra:    extra,
 		Stage:    stage,
 		Replace:  replace,
 		Progress: progress,

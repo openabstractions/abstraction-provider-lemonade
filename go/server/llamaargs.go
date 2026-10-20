@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/openabstractions/abstraction-inference/go/providerhost/llamacpp"
+	"github.com/openabstractions/abstraction-provider-kit/go/llamacpp"
 )
 
 // ErrForbiddenLlamaFlag reports a llama-server option the llama.cpp b10825

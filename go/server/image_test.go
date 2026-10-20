@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	media "github.com/openabstractions/abstraction-inference/go/mediationcontent"
 	"hash/crc32"
 	"io"
 	"mime"
@@ -17,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/openabstractions/abstraction-inference/go/providerhost/sdcpp"
 )
 
 // pngHeader is a PNG signature and IHDR chunk naming width × height; the
@@ -99,53 +98,53 @@ func TestImageRouteRefusesEngineDirectiveAndSize(t *testing.T) {
 		want                    error
 	}
 	requests := []request{
-		{"/api/v1/images/generations", "application/json", jsonBody("a lighthouse " + directive), sdcpp.ErrEngineDirective},
-		{"/api/v1/images/generations", "application/json", jsonBody("<SD_CPP_EXTRA_ARGS>{}"), sdcpp.ErrEngineDirective},
-		{"/api/v1/images/generations", "application/json", jsonBody("\uFF1Csd_cpp_extra_args\uFF1E{}"), sdcpp.ErrEngineDirective},
-		{"/api/v1/images/generations", "", `{"prompt":"x","model":"<sd_cpp_extra_args>{}"}`, sdcpp.ErrEngineDirective},
-		{"/api/v1/images/generations", "", `{"prompt":"x","size":"4096x4096"}`, sdcpp.ErrImageSize},
-		{"/api/v1/images/generations", "", `{"prompt":"x","size":"65536x21846"}`, sdcpp.ErrImageSize},
+		{"/api/v1/images/generations", "application/json", jsonBody("a lighthouse " + directive), media.ErrEngineDirective},
+		{"/api/v1/images/generations", "application/json", jsonBody("<SD_CPP_EXTRA_ARGS>{}"), media.ErrEngineDirective},
+		{"/api/v1/images/generations", "application/json", jsonBody("\uFF1Csd_cpp_extra_args\uFF1E{}"), media.ErrEngineDirective},
+		{"/api/v1/images/generations", "", `{"prompt":"x","model":"<sd_cpp_extra_args>{}"}`, media.ErrEngineDirective},
+		{"/api/v1/images/generations", "", `{"prompt":"x","size":"4096x4096"}`, media.ErrImageSize},
+		{"/api/v1/images/generations", "", `{"prompt":"x","size":"65536x21846"}`, media.ErrImageSize},
 		// Only the fields inference sends are forwarded.
-		{"/api/v1/images/generations", "", `{"prompt":"x","negative_prompt":"<sd_cpp_extra_args>{}"}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","extra":{"nested":["<sd_cpp_extra_args"]}}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","<sd_cpp_extra_args>":1}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","width":65536,"height":21846}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","lora":[{"path":"C:\\x.ckpt"}]}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":["x"]}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","n":"1"}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x","n":1.5}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `{"prompt":"x"} {"prompt":"y"}`, sdcpp.ErrRequestForm},
-		{"/api/v1/images/generations", "", `prompt=x`, sdcpp.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","negative_prompt":"<sd_cpp_extra_args>{}"}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","extra":{"nested":["<sd_cpp_extra_args"]}}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","<sd_cpp_extra_args>":1}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","width":65536,"height":21846}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","lora":[{"path":"C:\\x.ckpt"}]}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":["x"]}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","n":"1"}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x","n":1.5}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `{"prompt":"x"} {"prompt":"y"}`, media.ErrRequestForm},
+		{"/api/v1/images/generations", "", `prompt=x`, media.ErrRequestForm},
 	}
 	contentType, body := editForm(t, "a lighthouse "+directive, "512x512")
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrEngineDirective})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrEngineDirective})
 	contentType, body = editForm(t, "a lighthouse", "4096x4096")
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrImageSize})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrImageSize})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "negative_prompt", data: []byte("<sd_cpp_extra_args>")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "prompt", data: []byte("second")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = imageForm(t, formPart{name: "prompt", encoding: "quoted-printable", data: []byte("=3Csd_cpp_extra_args>")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "mask", file: "mask.gif", media: "image/gif", data: []byte("GIF89a....")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	// cpp-httplib and Go's form parser may read a part name holding a quote
 	// or a parameter differently; such a name is outside the allow-list.
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "x; filename=a.png", media: "image/png", data: pngInput})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "prompt\"; name=\"image", data: []byte("x")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "prompt", file: "prompt.txt", media: "image/png", data: pngInput})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "mask", data: []byte("text in a file's place")})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrRequestForm})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrRequestForm})
 	// INF-SD2: with size "auto" sd-server takes the size from the input, so
 	// the input's header is bounded too; a mask is bounded the same way.
 	contentType, body = imageForm(t, formPart{name: "prompt", data: []byte("a lighthouse")}, formPart{name: "size", data: []byte("auto")},
 		formPart{name: "image", file: "image.png", media: "image/png", data: pngHeader(16384, 16384)})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrImageSize})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrImageSize})
 	contentType, body = editForm(t, "a lighthouse", "512x512", formPart{name: "mask", file: "mask.png", media: "image/png", data: pngHeader(65536, 21846)})
-	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), sdcpp.ErrImageSize})
+	requests = append(requests, request{"/api/v1/images/edits", contentType, string(body), media.ErrImageSize})
 
 	for i, r := range requests {
 		req, err := http.NewRequest(http.MethodPost, s.base+r.path, strings.NewReader(r.body))
@@ -247,7 +246,7 @@ func TestImageRouteRefusesModelsOtherThanTheImageModels(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", contentType)
-		if _, err := s.HTTP().Do(req); !errors.Is(err, ErrImageRoute) || !errors.Is(err, sdcpp.ErrRequestForm) {
+		if _, err := s.HTTP().Do(req); !errors.Is(err, ErrImageRoute) || !errors.Is(err, media.ErrRequestForm) {
 			t.Fatalf("%s %.60s: %v", path, body, err)
 		}
 	}
@@ -278,7 +277,7 @@ func TestImageBodyLimitFollowsMaxImageBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.HTTP().Do(req); !errors.Is(err, sdcpp.ErrRequestForm) {
+	if _, err := s.HTTP().Do(req); !errors.Is(err, media.ErrRequestForm) {
 		t.Fatalf("oversized body: %v", err)
 	}
 }
@@ -325,7 +324,7 @@ func TestImageBodyIsReadInsideTheRequestSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.HTTP().Do(refused); !errors.Is(err, sdcpp.ErrRequestForm) {
+	if _, err := s.HTTP().Do(refused); !errors.Is(err, media.ErrRequestForm) {
 		t.Fatal(err)
 	}
 	select {
