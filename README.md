@@ -135,7 +135,8 @@ and refuses every launch there (`server/system_other.go`).
 
 ## Status
 
-Development provider for OA 0.4.0, not published.
+Part of OpenAbstractions 0.8.0, on Windows x64 only. Setup's catalogue
+pins the reviewed package, and every other platform refuses the launch.
 
 ## Licence
 

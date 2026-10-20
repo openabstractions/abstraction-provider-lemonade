@@ -16,9 +16,9 @@ import (
 // (server.cpp handle_image_edits, "Extract optional mask file", and
 // sdcpp_server.cpp image_edits, the "mask" multipart field). sd-server
 // master-843-462d675 loads it with one channel
-// (examples/server/routes_openai.cpp, load_image_from_memory(..., 1) for
+// (stable-diffusion.cpp/examples/server/routes_openai.cpp, load_image_from_memory(..., 1) for
 // mask_bytes), which stb reduces to luminance and drops alpha
-// (examples/common/media_io.cpp, stbi_load_from_memory with expected_channel),
+// (stable-diffusion.cpp/examples/common/media_io.cpp, stbi_load_from_memory with expected_channel),
 // and src/stable-diffusion.cpp generate_image keeps the init image where the
 // mask is 0 and changes it where the mask is 1 ((1 - mask) * init, and a
 // missing mask is all 1).

@@ -5,7 +5,7 @@ package setup
 import "github.com/openabstractions/abstraction-provider-lemonade/go/server"
 
 const llamaRuntimeVersion = "14.51.36231"
-const llamaRuntimeURL = "https://github.com/openabstractions/redist/releases/download/v0.8.0/vc-runtime-14.51.36231-win-x64.zip"
+const llamaRuntimeURL = "https://github.com/openabstractions/redist/releases/download/v0.8.1/vc-runtime-14.51.36231-win-x64.zip"
 
 var llamaRuntimeInput = backendRuntime{
 	Name:   "vc-runtime-14.51.36231-win-x64.zip",

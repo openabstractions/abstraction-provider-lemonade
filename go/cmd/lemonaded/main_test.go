@@ -417,7 +417,13 @@ func TestRootOptions(t *testing.T) {
 		t.Fatalf("serve with --state: %v", err)
 	}
 	// A folder open to other accounts is refused (setup.EnsurePrivateFolder).
-	for _, args := range [][]string{{"--state", "relative"}, {"--dir"}, {"--state", state, "--state", state}, {"--dir=relative"}, {"--state", t.TempDir()}} {
+	open := t.TempDir()
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(open, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"--state", "relative"}, {"--dir"}, {"--state", state, "--state", state}, {"--dir=relative"}, {"--state", open}} {
 		if _, err := applyRootOptions(args); !errors.Is(err, setup.ErrSelection) {
 			t.Fatalf("%q: %v", args, err)
 		}

@@ -78,12 +78,12 @@ func validateLemondArgs(args []string, cfg Config) error {
 	return nil
 }
 
-// launchKeys are the per-launch credentials. Lemonade 2026.39.1 reads
+// launchKeys are the per-launch credentials. The 2026.39.1 server reads
 // LEMONADE_API_KEY and LEMONADE_ADMIN_API_KEY from its environment
 // (src/cpp/server/server.cpp lines 660-668) and, when set, answers 401 to any
 // /api, /v0, /v1, /mcp or /metrics request without one of them and to any
 // /internal/* request without the admin key (lines 961-1017). The embeddable
-// guide (docs/embeddable/runtime.md, "Launching" and "Authenticating
+// guide (lemonade/docs/embeddable/runtime.md, "Launching" and "Authenticating
 // Requests") passes the key in the child environment and sends it as
 // `Authorization: Bearer KEY` on every request. The keys live only in this
 // process's memory and the child's environment block.

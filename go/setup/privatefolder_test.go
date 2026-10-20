@@ -41,9 +41,15 @@ func TestEnsurePrivateFolder(t *testing.T) {
 	if !errors.Is(err, ErrSelection) {
 		t.Fatalf("network drive: %v", err)
 	}
-	// t.TempDir inherits its parent's entries, which allow more than this
-	// account.
-	if err := EnsurePrivateFolder(t.TempDir()); !errors.Is(err, ErrSelection) || !errors.Is(err, privatedir.ErrNotPrivate) {
+	// Windows temporary folders inherit access for other accounts. POSIX
+	// folders need explicit group/other access regardless of the caller's umask.
+	open := t.TempDir()
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(open, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := EnsurePrivateFolder(open); !errors.Is(err, ErrSelection) || !errors.Is(err, privatedir.ErrNotPrivate) {
 		t.Fatalf("a folder open to others: %v", err)
 	}
 	file := filepath.Join(t.TempDir(), "file")

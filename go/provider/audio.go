@@ -100,16 +100,35 @@ func (speaker) Unsupported(req wire.SpeechRequest) string {
 	if _, err := kokoro.Text(req.Text); err != nil {
 		return "text"
 	}
+	// Kokoro takes a speaking rate within its own bounds and no voice
+	// instructions (inference INF-S9).
+	if _, named := req.Extensions[inference.SpeechInstructionsExtension]; named {
+		return "extension:" + inference.SpeechInstructionsExtension
+	}
+	if speed, _, err := inference.SpeechSpeed(req); err != nil || speed < kokoro.MinSpeed || speed > kokoro.MaxSpeed {
+		return "extension:" + inference.SpeechSpeedExtension
+	}
 	return ""
 }
 
+// speakerSpeed is the speaking rate of an admitted request, 1 when none was
+// named.
+func speakerSpeed(req wire.SpeechRequest) float64 {
+	speed, _, err := inference.SpeechSpeed(req)
+	if err != nil {
+		return 1
+	}
+	return speed
+}
+
 func (s speaker) Run(ctx context.Context, model string, req wire.SpeechRequest) inference.SpeechEngineReply {
-	if _, err := kokoro.NewSynthesis(model, req.Text, req.Voice, 1); err != nil {
+	speed := speakerSpeed(req)
+	if _, err := kokoro.NewSynthesis(model, req.Text, req.Voice, speed); err != nil {
 		return inference.SpeechEngineReply{Outcome: wire.ReplyOutcomeInvalid, Reason: "request"}
 	}
 	// The server transport rebuilds this OpenAI-shaped body with the
 	// policy package (kokoro.ParseSynthesis) before Lemonade sees it.
-	body, err := json.Marshal(map[string]any{"model": model, "input": req.Text, "voice": req.Voice, "response_format": "pcm", "speed": 1})
+	body, err := json.Marshal(map[string]any{"model": model, "input": req.Text, "voice": req.Voice, "response_format": "pcm", "speed": speed})
 	if err != nil {
 		return inference.SpeechEngineReply{Outcome: wire.ReplyOutcomeInvalid, Reason: "request"}
 	}

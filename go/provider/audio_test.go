@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	inference "github.com/openabstractions/abstraction-inference/go"
 	wire "github.com/openabstractions/abstraction-inference/go/abstraction/inference/api"
 	"github.com/openabstractions/abstraction-provider-kit/go/kokoro"
 )
@@ -188,5 +189,37 @@ func TestTranscriberRun(t *testing.T) {
 	end = tr.Run(context.Background(), "Whisper-Large-v3-Turbo", wire.TranscriptionRequest{}, []byte("RIFF....WAVEjunk"), func(wire.TranscriptSegment) {})
 	if end.Outcome != wire.ReplyOutcomeInvalid || end.Reason != "audio:wav" || requests.Load() != 1 {
 		t.Fatalf("malformed WAV %+v, %d requests", end, requests.Load())
+	}
+}
+
+// Kokoro honours a speaking rate within its own bounds and refuses voice
+// instructions and a rate beyond them by name (inference INF-S9).
+func TestSpeakerHonoursSpeedAndRefusesInstructions(t *testing.T) {
+	with := func(key, value string) wire.SpeechRequest {
+		req := speech("Hello.", "af_sky", wire.SpeechFormatWav)
+		req.Extensions = map[string]string{key: value}
+		return req
+	}
+	var s speaker
+	for want, req := range map[string]wire.SpeechRequest{
+		"":                              with(inference.SpeechSpeedExtension, "1.5"),
+		"extension:openai/speed":        with(inference.SpeechSpeedExtension, "3"),
+		"extension:openai/instructions": with(inference.SpeechInstructionsExtension, "Whisper."),
+	} {
+		if got := s.Unsupported(req); got != want {
+			t.Errorf("%v: %q, want %q", req.Extensions, got, want)
+		}
+	}
+	var body []byte
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "audio/l16;rate=24000;endianness=little-endian")
+		w.Write([]byte{1, 0, 2, 0})
+	}))
+	defer engine.Close()
+	reply := speaker{server: &fakeServer{base: engine.URL}, client: engine.Client()}.Run(context.Background(), kokoro.KokoroV1, with(inference.SpeechSpeedExtension, "1.5"))
+	var sent map[string]any
+	if err := json.Unmarshal(body, &sent); err != nil || reply.Outcome != wire.ReplyOutcomeCompleted || sent["speed"] != 1.5 {
+		t.Fatalf("reply %+v sent %s", reply, body)
 	}
 }
